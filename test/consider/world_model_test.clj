@@ -24,6 +24,27 @@
     (is (= [0.0] (:position (get-slot bs :e1))))
     (is (= [0.1] (:variance (get-slot bs :e1))))))
 
+(deftest test-grow-and-merge
+  (let [bs (-> (make-belief-state)
+               (grow-slots [(make-slot :e1 [1.0]) (make-slot :e2 [2.0])]))]
+    (is (= 2 (count (:internal-states bs))))
+    (let [merged-bs (merge-slots bs :e1 [:e2])]
+      (is (= 1 (count (:internal-states merged-bs))))
+      (is (contains? (:internal-states merged-bs) :e1))
+      (is (not (contains? (:internal-states merged-bs) :e2))))))
+
+(deftest test-generative-model-prediction
+  (let [likelihood-fn (fn [states] [{:obs 1.0}])
+        transition-fn (fn [states action] (update-in states [:e1 :position 0] inc))
+        bs (-> (make-belief-state)
+               (update-slot :e1 [0.0] [1.0])
+               (with-generative-model likelihood-fn transition-fn))]
+    (testing "Observation prediction"
+      (is (= [{:obs 1.0}] (predict-observation bs))))
+    (testing "Next state prediction"
+      (let [next-states (predict-next-state bs :some-action)]
+        (is (= 1.0 (first (get-in next-states [:e1 :position]))))))))
+
 (deftest test-validate-belief-state
   (let [bs (make-belief-state)]
     (is (validate-belief-state bs))

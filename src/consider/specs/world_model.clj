@@ -26,6 +26,9 @@
 ;; Likelihood P(o|s): Mapping from hidden states to predicted observations.
 (s/def ::likelihood-mapping fn?) ;; (fn [internal-states] -> predicted-sensory-states)
 
+;; Transition Dynamics P(s_t+1 | s_t, a_t): Mapping from current states and action to next states.
+(s/def ::transition-dynamics fn?) ;; (fn [internal-states action] -> predicted-internal-states)
+
 ;; Priors P(s): Beliefs about states before observation, including preferences (C-matrix).
 (s/def ::prior-beliefs (s/keys :req-un [::internal-states]))
 (s/def ::preferences (s/coll-of ::observation :kind vector?)) ;; Goal states (C)
@@ -48,4 +51,6 @@
                  ::variational-free-energy 
                  ::expected-free-energy 
                  ::efe-components
-                 ::preferences]))
+                 ::preferences]
+          :opt-un [::likelihood-mapping
+                 ::transition-dynamics]))
