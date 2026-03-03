@@ -1,9 +1,10 @@
 (ns consider.llm
   "Implementation of the LLM Abstraction Layer (System 1)."
   (:require [clojure.spec.alpha :as s]
-            [consider.specs.llm :as llm-spec]))
+            [consider.specs.llm :as llm-spec]
+            [clojure.string :as str]))
 
-;; --- Protocol definitions (re-stated from specs for actual use) ---
+;; --- Protocols ---
 
 (defprotocol PolicyPredictor
   "Protocol for generating candidate reasoning steps and their priors."
@@ -12,6 +13,42 @@
 (defprotocol ProcessScorer
   "Protocol for scoring a candidate step or path (Process Reward)."
   (score-step [this context candidate-action] "Returns a pragmatic and epistemic estimate."))
+
+;; --- Prompt Templates ---
+
+(defn- format-context
+  [context]
+  (str/join "\n" (map (fn [{:keys [role content]}] (str (str/upper-case (name role)) ": " content)) context)))
+
+(defn prediction-prompt
+  "Generates a prompt for System 1 policy prior generation."
+  [context]
+  (str "You are System 1, a fast policy predictor for an Active Inference agent.
+Current trajectory:
+" (format-context context) "
+
+Generate 3-5 potential next reasoning steps. For each step, provide:
+1. candidate-action: The text of the action.
+2. prior-prob: Your confidence that this is the best next step (0.0 to 1.0).
+3. pragmatic-estimate: Expected utility (0.0 to 1.0).
+4. epistemic-estimate: Expected information gain (0.0 to 1.0).
+
+Return ONLY a JSON array of objects with these keys."))
+
+(defn scoring-prompt
+  "Generates a prompt for scoring a specific candidate step."
+  [context candidate-action]
+  (str "You are a Process Reward Model. Evaluate the following candidate reasoning step:
+Trajectory:
+" (format-context context) "
+Candidate Action: " candidate-action "
+
+Provide:
+1. pragmatic-estimate: Relevance to the final goal (0.0 to 1.0).
+2. epistemic-estimate: Quality of reasoning/information gain (0.0 to 1.0).
+3. confidence: Your certainty in this evaluation (0.0 to 1.0).
+
+Return ONLY a JSON object with these keys."))
 
 ;; --- Mock Implementation for Testing ---
 
@@ -35,6 +72,28 @@
   "Creates a mock LLM with predefined responses."
   ([] (make-mock-llm {}))
   ([responses] (->MockLLM responses)))
+
+;; --- Generic API Wrapper (Conceptual) ---
+
+(defrecord DynamicLLM [model-name api-key provider completion-fn]
+  PolicyPredictor
+  (predict-candidates [this context]
+    (let [prompt (prediction-prompt context)
+          raw-resp (completion-fn {:model model-name :prompt prompt})]
+      ;; In a real implementation, we would parse JSON from raw-resp
+      [{:candidate-action "Parsed from LLM"
+        :prior-prob 0.8
+        :pragmatic-estimate 0.7
+        :epistemic-estimate 0.3
+        :confidence 0.9}]))
+  
+  ProcessScorer
+  (score-step [this context candidate-action]
+    (let [prompt (scoring-prompt context candidate-action)
+          raw-resp (completion-fn {:model model-name :prompt prompt})]
+      {:pragmatic-estimate 0.6
+       :epistemic-estimate 0.4
+       :confidence 0.8})))
 
 (defn validate-candidate-step
   "Validates a candidate step against its specification."

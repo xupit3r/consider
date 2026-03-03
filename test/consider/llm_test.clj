@@ -2,7 +2,8 @@
   (:require [clojure.test :refer :all]
             [consider.llm :refer :all]
             [clojure.spec.alpha :as s]
-            [consider.specs.llm :as llm-spec]))
+            [consider.specs.llm :as llm-spec]
+            [clojure.string :as str]))
 
 (deftest test-mock-llm
   (let [llm (make-mock-llm)]
@@ -15,6 +16,19 @@
       (let [score (score-step llm [] "Some Action")]
         (is (contains? score :pragmatic-estimate))
         (is (contains? score :epistemic-estimate))))))
+
+(deftest test-prompt-templates
+  (let [ctx [{:role :user :content "Ask about the world"}]]
+    (testing "prediction-prompt"
+      (let [prompt (prediction-prompt ctx)]
+        (is (str/includes? prompt "USER: Ask about the world"))
+        (is (str/includes? prompt "JSON array"))))
+    
+    (testing "scoring-prompt"
+      (let [prompt (scoring-prompt ctx "Action 1")]
+        (is (str/includes? prompt "USER: Ask about the world"))
+        (is (str/includes? prompt "Candidate Action: Action 1"))
+        (is (str/includes? prompt "JSON object"))))))
 
 (deftest test-mock-llm-with-responses
   (let [ctx [{:role :user :content "Hello"}]
