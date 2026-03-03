@@ -33,6 +33,8 @@
         ;; 2. LEARN: Discover causal structure from updated beliefs
         precision-matrix (estimate-precision-matrix updated-belief)
         causal-structure (causal/learn-structure precision-matrix)
+        ;; Close the loop: Update world model's transitions with learned structure
+        belief-with-learning (wm/update-transition-dynamics updated-belief (:sparse-S causal-structure))
         
         ;; 3. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
         ;; Update orchestrator with the new belief trajectory
@@ -51,7 +53,7 @@
         best-policy (exec/extract-best-policy reasoned-orchestrator :current)
         next-action (first best-policy)]
     
-    {:belief-state updated-belief
+    {:belief-state belief-with-learning
      :orchestrator-state reasoned-orchestrator
      :causal-structure causal-structure
      :next-action next-action

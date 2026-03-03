@@ -1,7 +1,9 @@
 (ns consider.world-model
   "Implementation of the Probabilistic World Model (Active Inference)."
   (:require [clojure.spec.alpha :as s]
-            [consider.specs.world-model :as wm-spec]))
+            [consider.specs.world-model :as wm-spec]
+            [uncomplicate.neanderthal.native :as native]
+            [uncomplicate.neanderthal.core :as n]))
 
 (defn make-slot
   "Creates a new slot representing a hidden state."
@@ -48,6 +50,39 @@
   "Updates a slot in the internal states."
   [belief-state id position variance]
   (assoc-in belief-state [:internal-states id] (make-slot id position variance)))
+
+(defn make-causal-transition-fn
+  "Creates a transition function that uses a causal adjacency matrix (B-matrix).
+   The adjacency matrix defines how states at t-1 influence states at t."
+  [adjacency-matrix slot-ids]
+  (fn [internal-states action]
+    ;; For now, we only use the adjacency matrix to influence transitions.
+    ;; In a full implementation, 'action' would select from a set of B-matrices.
+    (let [d (count slot-ids)
+          ;; Convert internal states to a vector for matrix multiplication
+          state-vec (native/dv d)]
+      (dotimes [i d]
+        (let [slot (get internal-states (nth slot-ids i))
+              ;; Assume single-dimension position for simplicity in matrix math for now
+              pos (first (:position slot))]
+          (n/entry! state-vec i (or pos 0.0))))
+      
+      (let [next-state-vec (n/mv adjacency-matrix state-vec)
+            updated-states (reduce-kv
+                            (fn [m i id]
+                              (let [new-pos [(n/entry next-state-vec i)]
+                                    old-slot (get internal-states id)]
+                                (assoc m id (assoc old-slot :position new-pos))))
+                            {}
+                            (vec slot-ids))]
+        updated-states))))
+
+(defn update-transition-dynamics
+  "Updates the transition dynamics of the belief state using a new causal structure."
+  [belief-state sparse-S]
+  (let [slot-ids (keys (:internal-states belief-state))
+        transition-fn (make-causal-transition-fn sparse-S slot-ids)]
+    (assoc belief-state :transition-dynamics transition-fn)))
 
 (defn grow-slots
   "Adds new hidden state slots to the internal world model."
