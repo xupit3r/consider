@@ -18,7 +18,8 @@
     (n/scal! 0.0 theta)
     (dotimes [i d] (n/entry! theta i i 1.0))
     ;; Perturb slightly to avoid exact zero matrices if needed
-    (n/axpy! 1e-6 (native/dge d d) theta)
+    (dotimes [i d]
+      (n/entry! theta i i (+ (n/entry theta i i) 1e-6)))
     (n/copy theta)))
 
 (defn step

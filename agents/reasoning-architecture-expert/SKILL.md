@@ -42,3 +42,4 @@ The `consider` project uses `executive.clj` to:
 1. After generating a new reasoning step (child node), evaluate its coherence with the parent.
 2. If a contradiction is found, assign a large negative reward ($Q$).
 3. Propagate this value back up to the parent, potentially causing the parent's $Q$ to drop and preventing further exploration of that branch.
+4. **Use the nREPL Server**: Leverage the `clojure_eval` tool to inspect the MCTS tree structure, verify UCT scores, and test candidate expansion logic in real-time. The server is typically available on port 7888. Use it to trace the selection and backpropagation steps, ensuring the reasoning agent explores promising trajectories while pruning high-EFE branches.

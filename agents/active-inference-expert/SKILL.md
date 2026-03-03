@@ -52,3 +52,4 @@ Detailed research and templates are available in the `references/` directory:
 ### 3. Tuning Policy Selection
 1. Balance **Epistemic vs. Pragmatic Value**: Adjust the weights if the agent is too exploratory or too rigid.
 2. Check the **Expected Free Energy** calculation in `executive.clj`.
+3. **Use the nREPL Server**: Leverage the `clojure_eval` tool to inspect the agent's belief state, verify VFE/EFE calculations, and test generative model likelihoods in real-time. The server is typically available on port 7888. Use it to trace the perception-action loop and ensure the agent's internal states correctly track observations.

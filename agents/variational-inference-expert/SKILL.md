@@ -41,3 +41,4 @@ The `consider` project uses `inference.clj` to:
 ### 3. Implementing the Wake-Sleep Objective
 1. **Wake Phase**: Minimize $KL(q(s|o) \| p(s,o))$ by updating the recognition network parameters.
 2. **Sleep Phase**: Minimize $KL(p(s,o) \| q(s|o))$ by updating the generative model parameters (priors and likelihoods).
+3. **Use the nREPL Server**: Leverage the `clojure_eval` tool to verify ODE integration, ELBO calculations, and Flow Matching vector fields in real-time. The server is typically available on port 7888. Use it to check convergence of the ODE solver and monitor Free Energy components during belief updating.

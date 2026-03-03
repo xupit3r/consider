@@ -38,3 +38,4 @@ The `consider` project uses `causal.clj` to:
 1. Check for **Latent Confounders**: Is the low-rank component $L$ capturing significant variance?
 2. Verify **Sparsity**: Is the $L_1$ penalty $\lambda$ correctly tuned to recover a meaningful graph?
 3. Test **Acyclicity**: Does the adjacency matrix contain cycles?
+4. **Use the nREPL Server**: Leverage the `clojure_eval` tool to inspect the results of ALVGL decomposition, verify acyclicity scores ($h(W)$), and test singular value thresholding (SVT) logic in real-time. The server is typically available on port 7888. Use it to visualize the sparse component $S$ and ensure the discovered causal graph matches expectations.

@@ -34,22 +34,14 @@
             ;; Sigma is a diagonal matrix or a vector.
             is-vctr (n/vctr? sigma)
             d-sig (if is-vctr (n/dim sigma) (n/mrows sigma))
-            st-sigma (n/copy sigma)]
+            st-sigma-dense (native/dge d-sig d-sig)]
+        (n/scal! 0.0 st-sigma-dense)
         (dotimes [i d-sig]
-          ;; Use entry with two indices for diagonal matrices, or one for vectors.
-          (let [v (if is-vctr (n/entry st-sigma i) (n/entry st-sigma i i))
+          (let [v (if is-vctr (n/entry sigma i) (n/entry sigma i i))
                 new-v (max 0.0 (- v tau))]
-            (if is-vctr
-              (n/entry! st-sigma i new-v)
-              (n/entry! st-sigma i i new-v))))
-        ;; Reconstruct: u * st-sigma * vt
-        (let [st-sigma-dense (if is-vctr
-                               (let [diag-m (native/dge d-sig d-sig)]
-                                 (n/scal! 0.0 diag-m)
-                                 (dotimes [i d-sig] (n/entry! diag-m i i (n/entry st-sigma i)))
-                                 diag-m)
-                               st-sigma)]
-          (n/mm u (n/mm st-sigma-dense vt)))))))
+            (n/entry! st-sigma-dense i i new-v)))
+        ;; Reconstruct: u * st-sigma-dense * vt
+        (n/mm u (n/mm st-sigma-dense vt))))))
 
 (defn matrix-trace
   "Calculates the trace of a matrix."

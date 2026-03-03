@@ -39,7 +39,8 @@ The `consider` project uses Neanderthal for:
 2. View it as a Neanderthal vector (`dv`) or matrix (`dge`) without copying data.
 3. Pass the view into Neanderthal math functions.
 
-### 3. Debugging Performance Bottlenecks
+## Debugging Performance Bottlenecks
 1. Look for non-destructive operations (missing `!`).
 2. Check for standard Clojure `map` or `reduce` on matrices.
 3. Use `criterium` to profile and identify GC pressure from excessive allocations.
+4. **Use the nREPL Server**: Leverage the `clojure_eval` tool to verify Neanderthal operations in real-time. The server is typically available on port 7888. Use it to check matrix shapes, types (e.g., `RealDiagonalMatrix`), and the output of complex LAPACK calls like `svd`.
