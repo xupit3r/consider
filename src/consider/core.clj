@@ -30,11 +30,18 @@
         ;; 1. PERCEIVE & INFER: Update beliefs based on sensory data (Minimize VFE)
         updated-belief (inf/belief-update belief-state sensory-data likelihood-fn vector-field-fn inference-steps)
         
+        ;; 1b. GROW: Check for novel entities if VFE/error is high
+        predicted-obs (wm/predict-observation updated-belief)
+        novel-slots (wm/identify-novel-entities updated-belief sensory-data predicted-obs)
+        belief-after-growth (if (empty? novel-slots)
+                              updated-belief
+                              (wm/grow-slots updated-belief novel-slots))
+        
         ;; 2. LEARN: Discover causal structure from updated beliefs
-        precision-matrix (estimate-precision-matrix updated-belief)
+        precision-matrix (estimate-precision-matrix belief-after-growth)
         causal-structure (causal/learn-structure precision-matrix)
         ;; Close the loop: Update world model's transitions with learned structure
-        belief-with-learning (wm/update-transition-dynamics updated-belief (:sparse-S causal-structure))
+        belief-with-learning (wm/update-transition-dynamics belief-after-growth (:sparse-S causal-structure))
         
         ;; 3. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
         ;; Update orchestrator with the new belief trajectory and causal epistemic guidance
