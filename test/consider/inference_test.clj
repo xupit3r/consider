@@ -17,19 +17,25 @@
     ;; 2 * pi * 0.1 ~ 0.628, ln(0.628) ~ -0.465, -0.5 * -0.465 ~ 0.232
     (is (> (calculate-accuracy po ao ov) 0.0))))
 
+(deftest test-calculate-risk
+  (let [po [1.0] preferences [[2.0]] ov [0.1]]
+    ;; Risk is KL(N(1.0, 0.1) || N(2.0, 0.1)) = 0.5 * (1.0 - 2.0)^2 / 0.1 = 0.5 * 1.0 / 0.1 = 5.0
+    (is (= 5.0 (calculate-risk po preferences ov)))))
+
 (deftest test-variational-free-energy
-  (let [bs (-> (wm/make-belief-state)
-               (wm/update-slot :e1 [0.0] [1.0]))
-        likelihood-fn (fn [states] [0.0])
-        actual-obs [0.1]
+  (let [bs (-> (wm/make-belief-state {} [[2.0]])
+               (wm/update-slot :e1 [1.0] [1.0]))
+        likelihood-fn (fn [states] [(first (:position (get states :e1)))])
+        actual-obs [1.0]
         vfe-metrics (variational-free-energy bs actual-obs likelihood-fn)]
     (is (contains? vfe-metrics :elbo))
-    (is (contains? vfe-metrics :vfe))))
+    (is (contains? vfe-metrics :vfe))
+    (is (= 5.0 (:risk vfe-metrics)))))
 
 (deftest test-belief-update
-  (let [bs (-> (wm/make-belief-state)
+  (let [bs (-> (wm/make-belief-state {} [[2.0]])
                (wm/update-slot :e1 [0.0] [1.0]))
-        likelihood-fn (fn [states] [0.0])
+        likelihood-fn (fn [states] [(first (:position (get states :e1)))])
         ;; Simple vector field: constant velocity towards observations
         vector-field-fn (fn [x t context]
                           (let [obs (first (get-in context [:observation]))
@@ -40,4 +46,5 @@
         actual-obs [0.1]
         updated-bs (belief-update bs actual-obs likelihood-fn vector-field-fn 10)]
     (is (not= bs updated-bs))
-    (is (contains? updated-bs :variational-free-energy))))
+    (is (contains? updated-bs :variational-free-energy))
+    (is (contains? (:efe-components updated-bs) :risk))))

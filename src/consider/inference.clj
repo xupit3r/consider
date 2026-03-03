@@ -65,8 +65,25 @@
                             (/ (Math/pow (- ao po) 2) (max 1e-9 ov)))))
                predicted-obs actual-obs observation-variance)))
 
+(defn calculate-risk
+  "Calculates the Risk (Pragmatic Value) as the KL divergence between predicted 
+   observations and agent preferences (C-matrix).
+   Risk = E_q[ln q(o|s) - ln p(o|C)]"
+  [predicted-obs preferences observation-variance]
+  (if (empty? preferences)
+    0.0
+    ;; Simplified: KL divergence between two Gaussians (Predicted vs Preferred)
+    ;; For now, assume preferences is a vector of target observation values.
+    (let [mu-p (first preferences) ;; Use the first preference as target for now
+          var-p observation-variance]
+      (reduce +
+              (map (fn [po mp vp]
+                     ;; KL(N(po, vp) || N(mp, vp)) = 0.5 * ((po - mp)^2 / vp)
+                     (* 0.5 (/ (Math/pow (- mp po) 2) (max 1e-9 vp))))
+                   predicted-obs mu-p var-p)))))
+
 (defn variational-free-energy
-  "Calculates the Variational Free Energy (F)."
+  "Calculates the Variational Free Energy (F) and Expected Free Energy (G) components."
   [belief-state actual-obs likelihood-fn]
   (let [internal-states (:internal-states belief-state)
         ;; Simplified: treat all slots' positions as a single vector for now
@@ -79,14 +96,19 @@
         complexity (kl-divergence mu-q var-q mu-p var-p)
         
         predicted-obs (likelihood-fn internal-states)
-        ;; Assume actual-obs and predicted-obs are vectors of floats for now
-        accuracy (calculate-accuracy predicted-obs actual-obs (vec (repeat (count actual-obs) 0.1)))
+        observation-variance (vec (repeat (count predicted-obs) 0.1))
+        
+        accuracy (calculate-accuracy predicted-obs actual-obs observation-variance)
+        
+        ;; Expected Free Energy Components (G)
+        risk (calculate-risk predicted-obs (:preferences belief-state) observation-variance)
         
         elbo (- accuracy complexity)]
     {:elbo elbo
      :complexity complexity
      :accuracy accuracy
-     :vfe (- complexity accuracy)}))
+     :vfe (- complexity accuracy)
+     :risk risk}))
 
 (defn belief-update
   "Performs belief updating using Flow Matching (amortized inference)."
@@ -107,7 +129,10 @@
         
         updated-bs (assoc belief-state :internal-states updated-internal-states)
         metrics (variational-free-energy updated-bs actual-obs likelihood-fn)]
-    (assoc updated-bs :variational-free-energy (:vfe metrics))))
+    (merge updated-bs 
+           {:variational-free-energy (:vfe metrics)
+            :efe-components {:risk (:risk metrics)
+                             :ambiguity 0.0}})))
 
 (defn train-recognition-model
   "Sleep Phase: Amortizes inference by training the vector-field-fn (Recognition Model)
