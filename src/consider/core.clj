@@ -61,10 +61,14 @@
         
         ;; 4. ACT: Extract the best policy
         best-policy (exec/extract-best-policy reasoned-orchestrator :current)
-        next-action (first best-policy)]
+        next-action (first best-policy)
+        
+        ;; 5. SLEEP (Amortization): Update the recognition model
+        trained-vector-field (inf/train-recognition-model vector-field-fn belief-with-learning 10)]
     
     {:belief-state belief-with-learning
      :orchestrator-state reasoned-orchestrator
+     :vector-field-fn trained-vector-field
      :causal-structure causal-structure
      :next-action next-action
      :policy best-policy}))
