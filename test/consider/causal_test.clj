@@ -33,9 +33,17 @@
       (is (> (n/nrm2 grad) 0.0)))))
 
 (deftest test-alvgl-decomposition
-  (let [theta (native/dge 2 2)]
-    (n/scal! 1.0 theta)
-    (let [decomp (alvgl-decomposition theta 0.1 0.1 :beta 0.1)]
-      (is (contains? decomp :sparse-S))
-      (is (contains? decomp :low-rank-L))
-      (is (contains? decomp :acyclicity)))))
+  (testing "2x2 case"
+    (let [theta (native/dge 2 2)]
+      (n/scal! 1.0 theta)
+      (let [decomp (alvgl-decomposition theta 0.1 0.1 :beta 0.1)]
+        (is (contains? decomp :sparse-S))
+        (is (contains? decomp :low-rank-L))
+        (is (contains? decomp :acyclicity)))))
+  
+  (testing "1x1 case"
+    (let [theta (native/dge 1 1)]
+      (n/entry! theta 0 0 1.0)
+      (let [decomp (alvgl-decomposition theta 0.1 0.1 :beta 0.1)]
+        (is (contains? decomp :sparse-S))
+        (is (contains? decomp :low-rank-L))))))

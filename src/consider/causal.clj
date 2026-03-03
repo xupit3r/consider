@@ -23,29 +23,33 @@
 (defn sv-threshold
   "Applies the singular-value thresholding operator: U * ST(Sigma, tau) * Vt."
   [m tau]
-  (let [svd-res (la/svd m true true)
-        u (:u svd-res)
-        sigma (:sigma svd-res)
-        vt (:vt svd-res)
-        ;; Sigma is a diagonal matrix or a vector.
-        is-vctr (n/vctr? sigma)
-        d (if is-vctr (n/dim sigma) (n/mrows sigma))
-        st-sigma (n/copy sigma)]
-    (dotimes [i d]
-      ;; Use entry with two indices for diagonal matrices, or one for vectors.
-      (let [v (if is-vctr (n/entry st-sigma i) (n/entry st-sigma i i))
-            new-v (max 0.0 (- v tau))]
-        (if is-vctr
-          (n/entry! st-sigma i new-v)
-          (n/entry! st-sigma i i new-v))))
-    ;; Reconstruct: u * st-sigma * vt
-    (let [st-sigma-dense (if is-vctr
-                           (let [diag-m (native/dge d d)]
-                             (n/scal! 0.0 diag-m)
-                             (dotimes [i d] (n/entry! diag-m i i (n/entry st-sigma i)))
-                             diag-m)
-                           st-sigma)]
-      (n/mm u (n/mm st-sigma-dense vt)))))
+  (let [d (n/mrows m)]
+    (if (= 1 d)
+      ;; For 1x1 matrix, SVT is just soft-thresholding the single entry
+      (soft-threshold m tau)
+      (let [svd-res (la/svd m \A \A)
+            u (:u svd-res)
+            sigma (:sigma svd-res)
+            vt (:vt svd-res)
+            ;; Sigma is a diagonal matrix or a vector.
+            is-vctr (n/vctr? sigma)
+            d-sig (if is-vctr (n/dim sigma) (n/mrows sigma))
+            st-sigma (n/copy sigma)]
+        (dotimes [i d-sig]
+          ;; Use entry with two indices for diagonal matrices, or one for vectors.
+          (let [v (if is-vctr (n/entry st-sigma i) (n/entry st-sigma i i))
+                new-v (max 0.0 (- v tau))]
+            (if is-vctr
+              (n/entry! st-sigma i new-v)
+              (n/entry! st-sigma i i new-v))))
+        ;; Reconstruct: u * st-sigma * vt
+        (let [st-sigma-dense (if is-vctr
+                               (let [diag-m (native/dge d-sig d-sig)]
+                                 (n/scal! 0.0 diag-m)
+                                 (dotimes [i d-sig] (n/entry! diag-m i i (n/entry st-sigma i)))
+                                 diag-m)
+                               st-sigma)]
+          (n/mm u (n/mm st-sigma-dense vt)))))))
 
 (defn matrix-trace
   "Calculates the trace of a matrix."
