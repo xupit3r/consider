@@ -86,9 +86,61 @@
         (recur (assoc curr-tree curr-id updated-node)
                (:parent-id node))))))
 
+(defn prune-branches
+  "Prunes branches from the tree that have an Expected Free Energy (value) above the threshold."
+  [orchestrator-state tree-id threshold]
+  (let [tree (get-in orchestrator-state [:forest tree-id])
+        ;; Find all nodes with value > threshold (we want to MINIMIZE value/EFE)
+        nodes-to-prune (filter (fn [[id node]] (> (:value node) threshold)) tree)
+        ids-to-prune (set (map first nodes-to-prune))
+        
+        ;; Function to find all descendants
+        get-descendants (fn [t root-id]
+                          (loop [queue [root-id]
+                                 descendants #{}]
+                            (if (empty? queue)
+                              descendants
+                              (let [curr (first queue)
+                                    children (map :node-id (filter #(= (:parent-id %) curr) (vals t)))]
+                                (recur (into (vec (rest queue)) children)
+                                       (into descendants children))))))
+        
+        all-pruned-ids (reduce (fn [acc id] (into acc (get-descendants tree id))) ids-to-prune ids-to-prune)
+        new-tree (apply dissoc tree (into all-pruned-ids ids-to-prune))]
+    (assoc-in orchestrator-state [:forest tree-id] new-tree)))
+
+(defn extract-best-policy
+  "Extracts the sequence of actions for the branch with the lowest Expected Free Energy."
+  [orchestrator-state tree-id]
+  (let [tree (get-in orchestrator-state [:forest tree-id])
+        ;; Find leaf nodes (nodes with no children)
+        all-ids (set (keys tree))
+        parent-ids (set (map :parent-id (vals tree)))
+        leaf-nodes (filter #(not (contains? parent-ids (:node-id %))) (vals tree))
+        
+        best-leaf (if (empty? leaf-nodes)
+                    (get tree "root")
+                    (apply min-key :value leaf-nodes))]
+    (loop [curr-node best-leaf
+           actions []]
+      (if (= "root" (:node-id curr-node))
+        (reverse actions)
+        (recur (get tree (:parent-id curr-node))
+               (conj actions (:action curr-node)))))))
+
+(defn add-tree
+  "Adds a new reasoning tree to the forest."
+  [orchestrator-state tree-id initial-state]
+  (let [root-node (make-node {:node-id "root"
+                              :parent-id nil
+                              :state initial-state
+                              :action "ROOT"
+                              :prior-prob 1.0})]
+    (assoc-in orchestrator-state [:forest tree-id] {"root" root-node})))
+
 (defn reason
-  "Performs a specified number of reasoning iterations using MCTS."
-  [orchestrator-state predictor scorer tree-id iterations exploration-weight]
+  "Performs a specified number of reasoning iterations using MCTS with sparse pruning."
+  [orchestrator-state predictor scorer tree-id iterations exploration-weight & {:keys [prune-threshold]}]
   (loop [state orchestrator-state
          i iterations]
     (if (zero? i)
@@ -100,11 +152,16 @@
             ;; 2. Expansion (via LLM predictor)
             candidates (llm/predict-candidates predictor (:state leaf))
             state-after-expansion (expand-node state tree-id leaf-id candidates)
-            ;; 3. Evaluation (via LLM scorer - use average of candidates for simplicity)
+            ;; 3. Evaluation (via LLM scorer)
             avg-heuristic-value (/ (reduce + (map (fn [c] (+ (:pragmatic-estimate c) (:epistemic-estimate c))) candidates))
                                    (max 1 (count candidates)))
             ;; 4. Backpropagation
             current-tree (get-in state-after-expansion [:forest tree-id])
-            updated-tree (update-node-value current-tree leaf-id avg-heuristic-value)]
-        (recur (assoc-in state-after-expansion [:forest tree-id] updated-tree)
-               (dec i))))))
+            updated-tree (update-node-value current-tree leaf-id avg-heuristic-value)
+            state-with-updated-tree (assoc-in state-after-expansion [:forest tree-id] updated-tree)
+            
+            ;; 5. Sparse Activation (Optional Pruning)
+            final-state (if prune-threshold
+                          (prune-branches state-with-updated-tree tree-id prune-threshold)
+                          state-with-updated-tree)]
+        (recur final-state (dec i))))))
