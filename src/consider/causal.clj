@@ -5,7 +5,47 @@
             [uncomplicate.neanderthal.core :as n]
             [uncomplicate.neanderthal.native :as native]
             [uncomplicate.neanderthal.real :as r]
-            [uncomplicate.neanderthal.vect-math :as vm]))
+            [uncomplicate.neanderthal.vect-math :as vm]
+            [uncomplicate.neanderthal.linalg :as la]))
+
+(defn soft-threshold
+  "Applies the soft-thresholding operator element-wise: sign(x) * max(|x| - tau, 0)."
+  [m tau]
+  (let [res (n/copy m)]
+    (dotimes [i (n/mrows res)]
+      (dotimes [j (n/ncols res)]
+        (let [v (n/entry res i j)
+              abs-v (Math/abs v)
+              new-v (* (Math/signum v) (max 0.0 (- abs-v tau)))]
+          (n/entry! res i j new-v))))
+    res))
+
+(defn sv-threshold
+  "Applies the singular-value thresholding operator: U * ST(Sigma, tau) * Vt."
+  [m tau]
+  (let [svd-res (la/svd m true true)
+        u (:u svd-res)
+        sigma (:sigma svd-res)
+        vt (:vt svd-res)
+        ;; Sigma is a diagonal matrix or a vector.
+        is-vctr (n/vctr? sigma)
+        d (if is-vctr (n/dim sigma) (n/mrows sigma))
+        st-sigma (n/copy sigma)]
+    (dotimes [i d]
+      ;; Use entry with two indices for diagonal matrices, or one for vectors.
+      (let [v (if is-vctr (n/entry st-sigma i) (n/entry st-sigma i i))
+            new-v (max 0.0 (- v tau))]
+        (if is-vctr
+          (n/entry! st-sigma i new-v)
+          (n/entry! st-sigma i i new-v))))
+    ;; Reconstruct: u * st-sigma * vt
+    (let [st-sigma-dense (if is-vctr
+                           (let [diag-m (native/dge d d)]
+                             (n/scal! 0.0 diag-m)
+                             (dotimes [i d] (n/entry! diag-m i i (n/entry st-sigma i)))
+                             diag-m)
+                           st-sigma)]
+      (n/mm u (n/mm st-sigma-dense vt)))))
 
 (defn matrix-trace
   "Calculates the trace of a matrix."
@@ -40,18 +80,51 @@
       (- (matrix-trace exp-M) d))))
 
 (defn alvgl-decomposition
-  "Performs a simple Sparse-Low Rank decomposition of a precision matrix."
-  [theta lambda gamma]
-  ;; This is a dummy implementation of the ALVGL decomposition.
-  ;; In a real system, this would use ADMM to solve:
-  ;; min ||S||_1 + gamma*||L||_* subject to Theta = S - L
+  "Performs Sparse-Low Rank decomposition of a precision matrix using ADMM.
+   Solves: min ||S||_1 + gamma*||L||_* subject to Theta = S - L."
+  [theta lambda gamma & {:keys [rho max-iter tol] 
+                         :or {rho 1.0 max-iter 100 tol 1e-4}}]
   (let [d (n/mrows theta)
-        S (n/copy theta)
-        L (native/dge d d)]
+        ;; Initial variables
+        S (native/dge d d)
+        L (native/dge d d)
+        U (native/dge d d)]
+    (n/scal! 0.0 S)
     (n/scal! 0.0 L)
-    {:sparse-S S
-     :low-rank-L L
-     :precision-theta theta}))
+    (n/scal! 0.0 U)
+    
+    (loop [k 0
+           S S
+           L L
+           U U]
+      (if (>= k max-iter)
+        {:sparse-S S :low-rank-L L :precision-theta theta :iterations k}
+        (let [;; 1. Update S: soft-threshold(Theta + L - U, lambda / rho)
+              temp-S (n/copy theta)
+              _ (n/axpy! 1.0 L temp-S)
+              _ (n/axpy! -1.0 U temp-S)
+              new-S (soft-threshold temp-S (/ lambda rho))
+              
+              ;; 2. Update L: sv-threshold(S - Theta + U, gamma / rho)
+              temp-L (n/copy new-S)
+              _ (n/axpy! -1.0 theta temp-L)
+              _ (n/axpy! 1.0 U temp-L)
+              new-L (sv-threshold temp-L (/ gamma rho))
+              
+              ;; 3. Update U: U = U + Theta - S + L
+              new-U (n/copy U)
+              _ (n/axpy! 1.0 theta new-U)
+              _ (n/axpy! -1.0 new-S new-U)
+              _ (n/axpy! 1.0 new-L new-U)
+              
+              ;; Check convergence (relative change in S)
+              diff-S (n/copy new-S)
+              _ (n/axpy! -1.0 S diff-S)
+              err (r/nrm2 diff-S)]
+          
+          (if (< err tol)
+            {:sparse-S new-S :low-rank-L new-L :precision-theta theta :iterations k :error err}
+            (recur (inc k) new-S new-L new-U)))))))
 
 (defn learn-structure
   "Learns the causal structure from a precision matrix."
