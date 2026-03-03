@@ -152,9 +152,16 @@
             ;; 2. Expansion (via LLM predictor)
             candidates (llm/predict-candidates predictor (:state leaf))
             state-after-expansion (expand-node state tree-id leaf-id candidates)
-            ;; 3. Evaluation (via LLM scorer)
-            avg-heuristic-value (/ (reduce + (map (fn [c] (+ (:pragmatic-estimate c) (:epistemic-estimate c))) candidates))
-                                   (max 1 (count candidates)))
+            ;; 3. Evaluation (via LLM scorer & Causal Model)
+            avg-heuristic-value (let [llm-val (/ (reduce + (map (fn [c] (+ (:pragmatic-estimate c) (:epistemic-estimate c))) candidates))
+                                                 (max 1 (count candidates)))
+                                      ;; Optional: calculate causal epistemic value (ambiguity reduction)
+                                      causal-val (if-let [amb-fn (get (meta orchestrator-state) :causal-ambiguity-fn)]
+                                                   (amb-fn (:state leaf))
+                                                   0.0)]
+                                  ;; G = Risk + Ambiguity. Higher causal-val means LOWER ambiguity (more information gain).
+                                  ;; So we subtract it from the EFE/value.
+                                  (- llm-val causal-val))
             ;; 4. Backpropagation
             current-tree (get-in state-after-expansion [:forest tree-id])
             updated-tree (update-node-value current-tree leaf-id avg-heuristic-value)

@@ -37,9 +37,19 @@
         belief-with-learning (wm/update-transition-dynamics updated-belief (:sparse-S causal-structure))
         
         ;; 3. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
-        ;; Update orchestrator with the new belief trajectory
+        ;; Update orchestrator with the new belief trajectory and causal epistemic guidance
         initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-data)})
-        updated-orchestrator (exec/add-tree orchestrator-state :current initial-trajectory)
+        updated-orchestrator (-> orchestrator-state
+                                 (exec/add-tree :current initial-trajectory)
+                                 (with-meta {:causal-ambiguity-fn 
+                                             (fn [trajectory]
+                                               ;; Heuristic: Epistemic value is higher if the causal model is complex
+                                               ;; but has low acyclicity score (clear DAG).
+                                               (let [acyclicity (:acyclicity causal-structure)
+                                                     ;; High acyclicity means high ambiguity (unclear causal direction)
+                                                     ;; We want to MINIMIZE acyclicity.
+                                                     ambiguity-score (Math/exp (or acyclicity 0.0))]
+                                                 (/ 1.0 (max 1e-6 ambiguity-score))))}))
         
         reasoned-orchestrator (exec/reason updated-orchestrator 
                                            llm-system ;; as Predictor
