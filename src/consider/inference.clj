@@ -4,7 +4,41 @@
             [consider.specs.inference :as inf-spec]
             [consider.world-model :as wm]
             [uncomplicate.neanderthal.core :as n]
-            [uncomplicate.neanderthal.native :as native]))
+            [uncomplicate.neanderthal.native :as native]
+            [uncomplicate.neanderthal.random :as rng]
+            [uncomplicate.neanderthal.real :as r]
+            [uncomplicate.neanderthal.vect-math :as vm]))
+
+;; --- ODE Solvers for Continuous Flows ---
+
+(defn euler-step
+  "Perform a single Euler step: x_{t+dt} = x_t + v(x_t, t) * dt."
+  [v-fn x t dt]
+  (let [velocity (v-fn x t)
+        res (n/copy x)]
+    (n/axpy! dt velocity res)
+    res))
+
+(defn integrate-ode
+  "Integrate the ODE dx/dt = v(x, t) from t0 to t1 using Euler steps."
+  [v-fn x0 t0 t1 steps]
+  (let [dt (/ (- t1 t0) (double (max 1 steps)))]
+    (loop [curr-x x0
+           curr-t t0
+           i 0]
+      (if (>= i steps)
+        curr-x
+        (recur (euler-step v-fn curr-x curr-t dt)
+               (+ curr-t dt)
+               (inc i))))))
+
+;; --- Flow Matching & Perceptual Inference ---
+
+(defn flow-matching-sample
+  "Generates a sample from q(s|o) by integrating a vector field from noise."
+  [vector-field-fn context noise-sample steps]
+  (let [v-fn (fn [x t] (vector-field-fn x t context))]
+    (integrate-ode v-fn noise-sample 0.0 1.0 steps)))
 
 (defn kl-divergence
   "Calculates the KL divergence between two multivariate Gaussians with diagonal covariances."
@@ -16,7 +50,7 @@
                    (* 0.5 (+ (/ vq vp)
                              (/ (Math/pow (- mp mq) 2) vp)
                              -1
-                             (Math/log (/ vp vq)))))
+                             (Math/log (/ (max 1e-9 vp) (max 1e-9 vq))))))
                  mu-q var-q mu-p var-p))))
 
 (defn calculate-accuracy
@@ -27,8 +61,8 @@
   (reduce +
           (map (fn [po ao ov]
                  ;; ln N(ao; po, ov) = -0.5 * (ln(2*pi*ov) + (ao - po)^2 / ov)
-                 (* -0.5 (+ (Math/log (* 2 Math/PI ov))
-                            (/ (Math/pow (- ao po) 2) ov))))
+                 (* -0.5 (+ (Math/log (* 2 Math/PI (max 1e-9 ov)))
+                            (/ (Math/pow (- ao po) 2) (max 1e-9 ov)))))
                predicted-obs actual-obs observation-variance)))
 
 (defn variational-free-energy
@@ -55,17 +89,22 @@
      :vfe (- complexity accuracy)}))
 
 (defn belief-update
-  "Performs a simple gradient descent step on Variational Free Energy."
-  [belief-state actual-obs likelihood-fn learning-rate]
-  ;; In a real implementation, we would use Flow Matching or DDVI.
-  ;; Here we simulate a small step that reduces VFE.
-  (let [metrics (variational-free-energy belief-state actual-obs likelihood-fn)
-        ;; Dummy update: just slightly nudge positions towards observations
-        updated-bs (reduce-kv 
-                    (fn [bs id slot]
-                      (let [pos (:position slot)
-                            new-pos (mapv (fn [p] (+ p (* learning-rate 0.1))) pos)] ;; Mock gradient
-                        (wm/update-slot bs id new-pos (:variance slot))))
-                    belief-state
-                    (:internal-states belief-state))]
+  "Performs belief updating using Flow Matching (amortized inference)."
+  [belief-state actual-obs likelihood-fn vector-field-fn steps]
+  (let [context {:observation actual-obs}
+        updated-internal-states
+        (reduce-kv
+         (fn [m id slot]
+           (let [dim (count (:position slot))
+                 noise (native/dv dim)]
+             (rng/rand-normal! noise)
+             (let [pos-sample (flow-matching-sample vector-field-fn context noise steps)
+                   dim (n/dim pos-sample)
+                   new-pos (mapv (fn [i] (n/entry pos-sample i)) (range dim))]
+               (assoc m id (assoc slot :position new-pos)))))
+         {}
+         (:internal-states belief-state))
+        
+        updated-bs (assoc belief-state :internal-states updated-internal-states)
+        metrics (variational-free-energy updated-bs actual-obs likelihood-fn)]
     (assoc updated-bs :variational-free-energy (:vfe metrics))))

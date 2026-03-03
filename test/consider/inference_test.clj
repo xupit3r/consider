@@ -2,6 +2,8 @@
   (:require [clojure.test :refer :all]
             [consider.inference :refer :all]
             [consider.world-model :as wm]
+            [uncomplicate.neanderthal.core :as n]
+            [uncomplicate.neanderthal.native :as native]
             [clojure.spec.alpha :as s]))
 
 (deftest test-kl-divergence
@@ -28,7 +30,14 @@
   (let [bs (-> (wm/make-belief-state)
                (wm/update-slot :e1 [0.0] [1.0]))
         likelihood-fn (fn [states] [0.0])
+        ;; Simple vector field: constant velocity towards observations
+        vector-field-fn (fn [x t context]
+                          (let [obs (first (get-in context [:observation]))
+                                current-x (n/entry x 0)
+                                velocity (native/dv (n/dim x))]
+                            (n/entry! velocity 0 (- obs current-x))
+                            velocity))
         actual-obs [0.1]
-        updated-bs (belief-update bs actual-obs likelihood-fn 0.1)]
+        updated-bs (belief-update bs actual-obs likelihood-fn vector-field-fn 10)]
     (is (not= bs updated-bs))
     (is (contains? updated-bs :variational-free-energy))))
