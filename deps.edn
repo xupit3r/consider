@@ -1,0 +1,11 @@
+{:paths ["src"]
+ :mvn/repos {"clojars" {:url "https://repo.clojars.org"}}
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}
+        techascent/tech.ml.dataset {:mvn/version "8.003"}
+        uncomplicate/neanderthal {:mvn/version "0.61.0"}
+        uncomplicate/deep-diamond {:mvn/version "0.43.0"}
+        funcool/promesa {:mvn/version "11.0.678"}}
+ :aliases
+ {:test {:extra-paths ["test"]
+         :main-opts ["-m" "cognitect.test-runner"]
+         :extra-deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}}}}
