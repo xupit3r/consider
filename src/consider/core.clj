@@ -83,7 +83,8 @@
 (defn initialize-agent
   "Initializes the global agent state."
   [initial-beliefs preferences likelihood-fn vector-field-fn llm-system]
-  {:belief-state (wm/make-belief-state initial-beliefs preferences)
+  {:belief-state (-> (wm/make-belief-state initial-beliefs preferences)
+                     (wm/with-generative-model likelihood-fn (fn [s a] s)))
    :orchestrator-state (exec/make-initial-orchestrator-state [])
    :likelihood-fn likelihood-fn
    :vector-field-fn vector-field-fn

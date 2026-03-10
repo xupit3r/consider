@@ -7,15 +7,18 @@
 (defn make-node
   "Creates a new MCTS node."
   [{:keys [node-id parent-id state action prior-prob risk ambiguity]}]
-  {:node-id node-id
-   :parent-id parent-id
-   :state state
-   :action action
-   :value (+ (or risk 0.5) (or ambiguity 0.5)) ;; Initial value
-   :risk (or risk 0.5)
-   :ambiguity (or ambiguity 0.5)
-   :visits 0
-   :prior-prob prior-prob})
+  (let [r (or risk 0.5)
+        a (or ambiguity 0.5)]
+    {:node-id node-id
+     :parent-id parent-id
+     :state state
+     :action action
+     ;; G = Risk + Ambiguity. We want to MINIMIZE this.
+     :value (+ r a)
+     :risk r
+     :ambiguity a
+     :visits 0
+     :prior-prob prior-prob}))
 
 (defn make-initial-orchestrator-state
   "Constructs the initial state for the orchestrator."
@@ -37,7 +40,10 @@
         parent-node (get tree node-id)
         new-nodes (map-indexed 
                    (fn [idx candidate]
-                     (let [new-id (str node-id "-" idx)]
+                     (let [new-id (str node-id "-" idx)
+                           ;; Convert pragmatic utility to risk: risk = 1.0 - utility
+                           risk (- 1.0 (or (:pragmatic-estimate candidate) 0.5))
+                           ambiguity (or (:epistemic-estimate candidate) 0.5)]
                        (make-node {:node-id new-id
                                    :parent-id node-id
                                    :state (conj (:state parent-node) 
@@ -45,8 +51,8 @@
                                                  :content (:candidate-action candidate)})
                                    :action (:candidate-action candidate)
                                    :prior-prob (:prior-prob candidate)
-                                   :risk (:pragmatic-estimate candidate)
-                                   :ambiguity (:epistemic-estimate candidate)})))
+                                   :risk risk
+                                   :ambiguity ambiguity})))
                    candidates)]
     (update-in orchestrator-state [:forest tree-id]
                (fn [t] (reduce (fn [acc node] (assoc acc (:node-id node) node)) t new-nodes)))))
@@ -153,14 +159,15 @@
             candidates (llm/predict-candidates predictor (:state leaf))
             state-after-expansion (expand-node state tree-id leaf-id candidates)
             ;; 3. Evaluation (via LLM scorer & Causal Model)
-            avg-heuristic-value (let [llm-val (/ (reduce + (map (fn [c] (+ (:pragmatic-estimate c) (:epistemic-estimate c))) candidates))
-                                                 (max 1 (count candidates)))
+            avg-heuristic-value (let [avg-pragmatic (/ (reduce + (map :pragmatic-estimate candidates)) (max 1 (count candidates)))
+                                      avg-epistemic (/ (reduce + (map :epistemic-estimate candidates)) (max 1 (count candidates)))
+                                      ;; G = Risk + Ambiguity. Risk = 1.0 - Utility
+                                      llm-val (+ (- 1.0 avg-pragmatic) avg-epistemic)
                                       ;; Optional: calculate causal epistemic value (ambiguity reduction)
                                       causal-val (if-let [amb-fn (get (meta orchestrator-state) :causal-ambiguity-fn)]
                                                    (amb-fn (:state leaf))
                                                    0.0)]
-                                  ;; G = Risk + Ambiguity. Higher causal-val means LOWER ambiguity (more information gain).
-                                  ;; So we subtract it from the EFE/value.
+                                  ;; Higher causal-val means LOWER ambiguity.
                                   (- llm-val causal-val))
             ;; 4. Backpropagation
             current-tree (get-in state-after-expansion [:forest tree-id])

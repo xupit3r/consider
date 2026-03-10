@@ -9,15 +9,18 @@
             [uncomplicate.neanderthal.linalg :as la]))
 
 (defn soft-threshold
-  "Applies the soft-thresholding operator element-wise: sign(x) * max(|x| - tau, 0)."
+  "Applies the soft-thresholding operator element-wise: sign(x) * max(|x| - tau, 0).
+   Forces zero diagonal for causal DAG consistency."
   [m tau]
   (let [res (n/copy m)]
     (dotimes [i (n/mrows res)]
       (dotimes [j (n/ncols res)]
-        (let [v (n/entry res i j)
-              abs-v (Math/abs v)
-              new-v (* (Math/signum v) (max 0.0 (- abs-v tau)))]
-          (n/entry! res i j new-v))))
+        (if (= i j)
+          (n/entry! res i j 0.0)
+          (let [v (n/entry res i j)
+                abs-v (Math/abs v)
+                new-v (* (Math/signum v) (max 0.0 (- abs-v tau)))]
+            (n/entry! res i j new-v)))))
     res))
 
 (defn sv-threshold
@@ -27,7 +30,7 @@
     (if (= 1 d)
       ;; For 1x1 matrix, SVT is just soft-thresholding the single entry
       (soft-threshold m tau)
-      (let [svd-res (la/svd m \A \A)
+      (let [svd-res (la/svd m true true)
             u (:u svd-res)
             sigma (:sigma svd-res)
             vt (:vt svd-res)
@@ -102,7 +105,7 @@
   "Performs Sparse-Low Rank decomposition of a precision matrix using ADMM with DAG constraints.
    Solves: min ||S||_1 + gamma*||L||_* + beta*h(S) subject to Theta = S - L."
   [theta lambda gamma & {:keys [rho beta max-iter tol eta] 
-                         :or {rho 1.0 beta 0.5 max-iter 100 tol 1e-4 eta 0.01}}]
+                         :or {rho 10.0 beta 0.1 max-iter 100 tol 1e-4 eta 0.01}}]
   (let [d (n/mrows theta)
         S (native/dge d d)
         L (native/dge d d)
