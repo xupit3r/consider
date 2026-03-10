@@ -4,10 +4,11 @@
       "command": "clojure",
       "args": [
         "-Tmcp",
-        "start",
-        ":config-profile",
-        ":cli-assist"
+        "start"
       ]
     }
+  },
+  "experimental": {
+    "enableAgents": true
   }
 }
