@@ -2,6 +2,7 @@
   (:require [clojure.test :refer :all]
             [consider.inference :refer :all]
             [consider.world-model :as wm]
+            [consider.models :as models]
             [uncomplicate.neanderthal.core :as n]
             [uncomplicate.neanderthal.native :as native]
             [clojure.spec.alpha :as s]))
@@ -63,3 +64,18 @@
     (is (not= bs updated-bs))
     (is (contains? updated-bs :variational-free-energy))
     (is (contains? (:efe-components updated-bs) :risk))))
+
+(deftest test-neural-training
+  (let [state-dim 1
+        obs-dim 1
+        hidden-dim 4
+        net (models/make-mlp-vector-field state-dim obs-dim hidden-dim)
+        
+        bs (-> (wm/make-belief-state {} [[2.0]])
+               (wm/update-slot :e1 [1.0] [1.0])
+               (wm/with-generative-model (fn [states] [1.0]) (fn [s a] s)))
+        
+        trained-net (train-recognition-model net bs 5)]
+    (is (not (fn? trained-net)))
+    (is (some? trained-net))
+    (is (instance? consider.models.NeanderthalMLP trained-net))))
