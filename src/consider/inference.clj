@@ -41,67 +41,116 @@
     (integrate-ode v-fn noise-sample 0.0 1.0 steps)))
 
 (defn kl-divergence
-  "Calculates the KL divergence between two multivariate Gaussians with diagonal covariances."
+  "Calculates the KL divergence between two multivariate Gaussians with diagonal covariances using Neanderthal."
   [mu-q var-q mu-p var-p]
   ;; KL(q||p) = 0.5 * sum(var-q/var-p + (mu-p - mu-q)^2 / var-p - 1 + ln(var-p/var-q))
-  (let [d (count mu-q)]
-    (reduce +
-            (map (fn [mq vq mp vp]
-                   (* 0.5 (+ (/ vq vp)
-                             (/ (Math/pow (- mp mq) 2) vp)
-                             -1
-                             (Math/log (/ (max 1e-9 vp) (max 1e-9 vq))))))
-                 mu-q var-q mu-p var-p))))
+  (let [d (n/dim mu-q)
+        ones (native/dv d)
+        _ (dotimes [i d] (n/entry! ones i 1.0)) ;; Initialize to ones
+        
+        ;; term1: var-q / var-p
+        t1 (n/copy var-q)
+        _ (vm/div! t1 var-p)
+        
+        ;; term2: (mu-p - mu-q)^2 / var-p
+        t2 (n/copy mu-p)
+        _ (n/axpy! -1.0 mu-q t2)
+        _ (vm/sqr! t2)
+        _ (vm/div! t2 var-p)
+        
+        ;; term3: ln(var-p / var-q)
+        t3 (n/copy var-p)
+        _ (vm/div! t3 var-q)
+        _ (vm/log! t3)
+        
+        ;; Sum all terms
+        res (n/copy t1)
+        _ (n/axpy! 1.0 t2 res)
+        _ (n/axpy! 1.0 t3 res)
+        _ (n/axpy! -1.0 ones res)]
+    (* 0.5 (n/dot res ones))))
 
 (defn calculate-accuracy
-  "Calculates the expected log likelihood (Accuracy) of the sensory data."
+  "Calculates the expected log likelihood (Accuracy) of the sensory data using Neanderthal."
   [predicted-obs actual-obs observation-variance]
   ;; Accuracy = E_q[ln p(o|s)]
-  ;; Assuming a Gaussian likelihood p(o|s) ~ N(predicted-obs, observation-variance)
-  (reduce +
-          (map (fn [po ao ov]
-                 ;; ln N(ao; po, ov) = -0.5 * (ln(2*pi*ov) + (ao - po)^2 / ov)
-                 (* -0.5 (+ (Math/log (* 2 Math/PI (max 1e-9 ov)))
-                            (/ (Math/pow (- ao po) 2) (max 1e-9 ov)))))
-               predicted-obs actual-obs observation-variance)))
+  ;; ln N(ao; po, ov) = -0.5 * (ln(2*pi*ov) + (ao - po)^2 / ov)
+  (let [d (n/dim predicted-obs)
+        ones (native/dv d)
+        _ (dotimes [i d] (n/entry! ones i 1.0))
+        
+        ;; term1: ln(2*pi*ov)
+        t1 (n/copy observation-variance)
+        _ (n/scal! (* 2.0 Math/PI) t1)
+        _ (vm/log! t1)
+        
+        ;; term2: (ao - po)^2 / ov
+        t2 (n/copy actual-obs)
+        _ (n/axpy! -1.0 predicted-obs t2)
+        _ (vm/sqr! t2)
+        _ (vm/div! t2 observation-variance)
+
+        ;; Sum terms
+        res (n/copy t1)
+        _ (n/axpy! 1.0 t2 res)]
+    (* -0.5 (n/dot res ones))))
 
 (defn calculate-risk
   "Calculates the Risk (Pragmatic Value) as the KL divergence between predicted 
-   observations and agent preferences (C-matrix).
-   Risk = E_q[ln q(o|s) - ln p(o|C)]"
+   observations and agent preferences (C-matrix) using Neanderthal."
   [predicted-obs preferences observation-variance]
   (if (empty? preferences)
     0.0
-    ;; Simplified: KL divergence between two Gaussians (Predicted vs Preferred)
-    ;; For now, assume preferences is a vector of target observation values.
-    (let [mu-p (first preferences) ;; Use the first preference as target for now
-          var-p observation-variance]
-      (reduce +
-              (map (fn [po mp vp]
-                     ;; KL(N(po, vp) || N(mp, vp)) = 0.5 * ((po - mp)^2 / vp)
-                     (* 0.5 (/ (Math/pow (- mp po) 2) (max 1e-9 vp))))
-                   predicted-obs mu-p var-p)))))
+    (let [mu-p (native/dv (n/dim predicted-obs))
+          ;; For now, use the first preference as target
+          pref-data (first preferences)
+          _ (dotimes [i (n/dim mu-p)] (n/entry! mu-p i (double (nth pref-data i))))
+          
+          ;; Risk = 0.5 * ((po - mp)^2 / vp)
+          diff (n/copy predicted-obs)
+          _ (n/axpy! -1.0 mu-p diff)
+          _ (vm/sqr! diff)
+          _ (vm/div! diff observation-variance)          
+          ones (native/dv (n/dim predicted-obs))
+          _ (dotimes [i (n/dim ones)] (n/entry! ones i 1.0))]
+      (* 0.5 (n/dot diff ones)))))
 
 (defn variational-free-energy
   "Calculates the Variational Free Energy (F) and Expected Free Energy (G) components."
   [belief-state actual-obs likelihood-fn]
   (let [internal-states (:internal-states belief-state)
-        ;; Simplified: treat all slots' positions as a single vector for now
-        mu-q (mapv first (map :position (vals internal-states)))
-        var-q (mapv first (map :variance (vals internal-states)))
-        ;; Priors (p) - simplified to standard normal for now if not specified
-        mu-p (vec (repeat (count mu-q) 0.0))
-        var-p (vec (repeat (count var-q) 1.0))
+        ;; Aggregate slots into Neanderthal vectors
+        sorted-slots (sort-by key internal-states)
+        mu-q-data (mapv #(first (:position (second %))) sorted-slots)
+        var-q-data (mapv #(first (:variance (second %))) sorted-slots)
+        
+        d (count mu-q-data)
+        mu-q (native/dv d)
+        var-q (native/dv d)
+        _ (dotimes [i d] 
+            (n/entry! mu-q i (double (nth mu-q-data i)))
+            (n/entry! var-q i (double (nth var-q-data i))))
+        
+        mu-p (native/dv d) ;; Standard normal prior
+        var-p (native/dv d)
+        _ (n/scal! 0.0 mu-p)
+        _ (n/scal! 0.0 var-p)
+        _ (n/axpy! 1.0 (native/dv d) var-p)
         
         complexity (kl-divergence mu-q var-q mu-p var-p)
         
-        predicted-obs (likelihood-fn internal-states)
-        observation-variance (vec (repeat (count predicted-obs) 0.1))
+        predicted-obs-data (likelihood-fn internal-states)
+        obs-dim (count predicted-obs-data)
+        predicted-obs (native/dv obs-dim)
+        actual-obs-v (native/dv obs-dim)
+        obs-var (native/dv obs-dim)
+        _ (dotimes [i obs-dim]
+            (n/entry! predicted-obs i (double (nth predicted-obs-data i)))
+            (n/entry! actual-obs-v i (double (nth actual-obs i)))
+            (n/entry! obs-var i 0.1))
         
-        accuracy (calculate-accuracy predicted-obs actual-obs observation-variance)
-        
-        ;; Expected Free Energy Components (G)
-        risk (calculate-risk predicted-obs (:preferences belief-state) observation-variance)
+        accuracy (calculate-accuracy predicted-obs actual-obs-v obs-var)
+        risk (calculate-risk predicted-obs (:preferences belief-state) obs-var)
         
         elbo (- accuracy complexity)]
     {:elbo elbo

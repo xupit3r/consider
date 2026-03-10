@@ -7,18 +7,33 @@
             [clojure.spec.alpha :as s]))
 
 (deftest test-kl-divergence
-  (let [mu-q [0.0] var-q [1.0]
-        mu-p [0.0] var-p [1.0]]
+  (let [mu-q (native/dv 1)
+        var-q (native/dv 1)
+        mu-p (native/dv 1)
+        var-p (native/dv 1)]
+    (n/entry! mu-q 0 0.0)
+    (n/entry! var-q 0 1.0)
+    (n/entry! mu-p 0 0.0)
+    (n/entry! var-p 0 1.0)
     (is (zero? (kl-divergence mu-q var-q mu-p var-p)))))
 
 (deftest test-calculate-accuracy
-  (let [po [1.0] ao [1.0] ov [0.1]]
+  (let [po (native/dv 1)
+        ao (native/dv 1)
+        ov (native/dv 1)]
+    (n/entry! po 0 1.0)
+    (n/entry! ao 0 1.0)
+    (n/entry! ov 0 0.1)
     ;; Accuracy is ln N(1.0; 1.0, 0.1) = -0.5 * (ln(2*pi*0.1) + 0)
     ;; 2 * pi * 0.1 ~ 0.628, ln(0.628) ~ -0.465, -0.5 * -0.465 ~ 0.232
     (is (> (calculate-accuracy po ao ov) 0.0))))
 
 (deftest test-calculate-risk
-  (let [po [1.0] preferences [[2.0]] ov [0.1]]
+  (let [po (native/dv 1)
+        preferences [[2.0]]
+        ov (native/dv 1)]
+    (n/entry! po 0 1.0)
+    (n/entry! ov 0 0.1)
     ;; Risk is KL(N(1.0, 0.1) || N(2.0, 0.1)) = 0.5 * (1.0 - 2.0)^2 / 0.1 = 0.5 * 1.0 / 0.1 = 5.0
     (is (= 5.0 (calculate-risk po preferences ov)))))
 
