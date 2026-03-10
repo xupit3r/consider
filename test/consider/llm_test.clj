@@ -30,13 +30,19 @@
         (is (str/includes? prompt "Candidate Action: Action 1"))
         (is (str/includes? prompt "JSON object"))))))
 
-(deftest test-mock-llm-with-responses
-  (let [ctx [{:role :user :content "Hello"}]
-        resp [{:candidate-action "Greeting"
-               :prior-prob 0.9
-               :pragmatic-estimate 0.8
-               :epistemic-estimate 0.2
-               :confidence 1.0}]
-        llm (make-mock-llm {ctx resp})]
-    (testing "predict-candidates with custom responses"
-      (is (= resp (predict-candidates llm ctx))))))
+(deftest test-mock-llm-with-dynamic-responses
+  (let [ctx [{:role :user :content "Dynamic"}]
+        llm (make-mock-llm {ctx (fn [c] [{:candidate-action (str "Action for " (count c))
+                                         :prior-prob 1.0
+                                         :pragmatic-estimate 0.5
+                                         :epistemic-estimate 0.5
+                                         :confidence 1.0}])})]
+    (testing "predict-candidates with dynamic function response"
+      (let [candidates (predict-candidates llm ctx)]
+        (is (= "Action for 1" (:candidate-action (first candidates))))))))
+
+(deftest test-json-parsing
+  (let [json-str "[{\"candidate-action\": \"A\", \"prior-prob\": 0.5, \"pragmatic-estimate\": 0.1, \"epistemic-estimate\": 0.2}]"
+        parsed (parse-json json-str)]
+    (is (vector? parsed))
+    (is (= "A" (:candidate-action (first parsed))))))
