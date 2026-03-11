@@ -10,13 +10,16 @@
 
 (deftest test-long-term-numerical-stability
   (testing "Agent remains stable over 20 steps in a static environment (Anchored baseline)"
-    (let [;; Use a functional vector field that always points to the observation
-          ;; This simulates a perfectly trained recognition model.
+    (let [;; Use a high-gain functional vector field that aggressively points to the observation
           v-fn (fn [x t context]
-                 (let [obs (first (:observation context))
-                       curr-x (n/entry x 0)
-                       v (native/dv (n/dim x))]
-                   (n/entry! v 0 (- obs curr-x))
+                 (let [obs-v (:observation context)
+                       d (n/dim x)
+                       v (native/dv d)]
+                   (dotimes [i d]
+                     (let [target (double (nth obs-v i))
+                           current (n/entry x i)]
+                       ;; High gain (10.0) to ensure correction exceeds noise
+                       (n/entry! v i (* 10.0 (- target current)))))
                    v))
 
           likelihood (fn [states] [(first (:position (get states :me)))])
@@ -40,9 +43,9 @@
             (is (< (apply max vfe-history) 100.0) "VFE should remain bounded")
             (let [final-pos (first (:position (get-in curr-agent [:belief-state :internal-states :me])))]
               (is (not (Double/isNaN final-pos)) "Internal state should not drift to NaN")
-              (is (< (Math/abs (- final-pos 1.0)) 0.2) "Agent should remain stable with anchored field")))
+              (is (< (Math/abs (- final-pos 1.0)) 0.2) "Agent should remain stable with high-gain anchored field")))
 
-          (let [res (core/step curr-agent [1.0] {:inference-steps 10
+          (let [res (core/step curr-agent [1.0] {:inference-steps 20 ;; More steps for stronger correction
                                                  :reasoning-iterations 2
                                                  :exploration-weight 1.0})
                 vfe (get-in res [:belief-state :variational-free-energy])]

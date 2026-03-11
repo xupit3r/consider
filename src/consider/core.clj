@@ -5,6 +5,7 @@
             [consider.causal :as causal]
             [consider.executive :as exec]
             [consider.llm :as llm]
+            [consider.models :as models]
             [uncomplicate.neanderthal.native :as native]
             [uncomplicate.neanderthal.core :as n]
             [uncomplicate.neanderthal.linalg :as la]))
@@ -79,23 +80,32 @@
   [agent-state sensory-data {:keys [inference-steps reasoning-iterations exploration-weight prune-threshold]}]
   (let [{:keys [belief-state orchestrator-state likelihood-fn vector-field-fn llm-system]} agent-state
         
-        ;; 1. PERCEIVE & INFER: Update beliefs based on sensory data (Minimize VFE)
-        updated-belief (inf/belief-update belief-state sensory-data likelihood-fn vector-field-fn inference-steps)
+        ;; 1. GROWTH CHECK: Detect novelty BEFORE inference to ensure neural network matches state space
+        predicted-obs (wm/predict-observation belief-state)
+        novel-slots (wm/identify-novel-entities belief-state sensory-data predicted-obs)
         
-        ;; 1b. GROW: Check for novel entities if VFE/error is high
-        predicted-obs (wm/predict-observation updated-belief)
-        novel-slots (wm/identify-novel-entities updated-belief sensory-data predicted-obs)
         belief-after-growth (if (empty? novel-slots)
-                              updated-belief
-                              (wm/grow-slots updated-belief novel-slots))
+                              belief-state
+                              (wm/grow-slots belief-state novel-slots))
         
-        ;; 2. LEARN: Discover causal structure from updated beliefs
-        precision-matrix (estimate-precision-matrix belief-after-growth)
+        vector-field-after-growth (if (and (not (fn? vector-field-fn))
+                                           (not (empty? novel-slots)))
+                                    (let [all-slots (:internal-states belief-after-growth)
+                                          total-state-dim (reduce + (map #(count (:position %)) (vals all-slots)))
+                                          total-obs-dim (count sensory-data)]
+                                      (models/grow-network vector-field-fn total-state-dim total-obs-dim))
+                                    vector-field-fn)
+        
+        ;; 2. PERCEIVE & INFER: Update beliefs based on sensory data (Minimize VFE)
+        ;; Now using the correctly-dimensioned belief and vector field
+        updated-belief (inf/belief-update belief-after-growth sensory-data likelihood-fn vector-field-after-growth inference-steps)
+        
+        ;; 3. LEARN: Discover causal structure from updated beliefs
+        precision-matrix (estimate-precision-matrix updated-belief)
         causal-structure (causal/learn-structure precision-matrix)
-        ;; Close the loop: Update world model's transitions with learned structure
-        belief-with-learning (wm/update-transition-dynamics belief-after-growth (:sparse-S causal-structure))
+        belief-with-learning (wm/update-transition-dynamics updated-belief (:sparse-S causal-structure))
         
-        ;; 3. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
+        ;; 4. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
         initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-data)})
         updated-orchestrator (-> orchestrator-state
                                  (exec/add-tree :current initial-trajectory)
@@ -116,12 +126,12 @@
                                            :likelihood-fn (:likelihood-mapping belief-with-learning)
                                            :transition-fn (:transition-dynamics belief-with-learning))
         
-        ;; 4. ACT: Extract the best policy
+        ;; 5. ACT: Extract the best policy
         best-policy (exec/extract-best-policy reasoned-orchestrator :current)
         next-action (first best-policy)
         
-        ;; 5. SLEEP (Amortization): Update the recognition model
-        trained-vector-field (inf/train-recognition-model vector-field-fn belief-with-learning 10)]
+        ;; 6. SLEEP (Amortization): Update the recognition model
+        trained-vector-field (inf/train-recognition-model vector-field-after-growth belief-with-learning 10)]
     
     {:belief-state belief-with-learning
      :orchestrator-state reasoned-orchestrator

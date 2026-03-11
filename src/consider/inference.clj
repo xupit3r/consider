@@ -49,27 +49,22 @@
 (defn kl-divergence
   "Calculates the KL divergence between two multivariate Gaussians with diagonal covariances using Neanderthal."
   [mu-q var-q mu-p var-p]
-  ;; KL(q||p) = 0.5 * sum(var-q/var-p + (mu-p - mu-q)^2 / var-p - 1 + ln(var-p/var-q))
   (let [d (n/dim mu-q)
         ones (native/dv d)
-        _ (dotimes [i d] (n/entry! ones i 1.0)) ;; Initialize to ones
+        _ (dotimes [i d] (n/entry! ones i 1.0))
 
-        ;; term1: var-q / var-p
         t1 (n/copy var-q)
         _ (vm/div! t1 var-p)
 
-        ;; term2: (mu-p - mu-q)^2 / var-p
         t2 (n/copy mu-p)
         _ (n/axpy! -1.0 mu-q t2)
         _ (vm/sqr! t2)
         _ (vm/div! t2 var-p)
 
-        ;; term3: ln(var-p / var-q)
         t3 (n/copy var-p)
         _ (vm/div! t3 var-q)
         _ (vm/log! t3)
 
-        ;; Sum all terms
         res (n/copy t1)
         _ (n/axpy! 1.0 t2 res)
         _ (n/axpy! 1.0 t3 res)
@@ -79,46 +74,38 @@
 (defn calculate-accuracy
   "Calculates the expected log likelihood (Accuracy) of the sensory data using Neanderthal."
   [predicted-obs actual-obs observation-variance]
-  ;; Accuracy = E_q[ln p(o|s)]
-  ;; ln N(ao; po, ov) = -0.5 * (ln(2*pi*ov) + (ao - po)^2 / ov)
   (let [d (n/dim predicted-obs)
         ones (native/dv d)
         _ (dotimes [i d] (n/entry! ones i 1.0))
 
-        ;; term1: ln(2*pi*ov)
         t1 (n/copy observation-variance)
         _ (n/scal! (* 2.0 Math/PI) t1)
         _ (vm/log! t1)
 
-        ;; term2: (ao - po)^2 / ov
         t2 (n/copy actual-obs)
         _ (n/axpy! -1.0 predicted-obs t2)
         _ (vm/sqr! t2)
         _ (vm/div! t2 observation-variance)
 
-        ;; Sum terms
         res (n/copy t1)
         _ (n/axpy! 1.0 t2 res)]
     (* -0.5 (n/dot res ones))))
 
 (defn calculate-risk
   "Calculates the Risk (Pragmatic Value) as the KL divergence between predicted 
-   observations and agent preferences (C-matrix) using Neanderthal.
-   Robustly handles cases where predicted observations have more dimensions than preferences."
+   observations and agent preferences (C-matrix) using Neanderthal."
   [predicted-obs preferences observation-variance]
   (if (empty? preferences)
     0.0
     (let [d (n/dim predicted-obs)
           mu-p (native/dv d)
-          ;; For now, use the first preference as target
           pref-data (first preferences)
           pref-count (count pref-data)
           _ (dotimes [i d]
               (n/entry! mu-p i (if (< i pref-count)
                                  (double (nth pref-data i))
-                                 0.0))) ;; Pad with zeros for novel slots
+                                 0.0)))
 
-          ;; Risk = 0.5 * ((po - mp)^2 / vp)
           diff (n/copy predicted-obs)
           _ (n/axpy! -1.0 mu-p diff)
           _ (vm/sqr! diff)
@@ -128,11 +115,9 @@
       (* 0.5 (n/dot diff ones)))))
 
 (defn variational-free-energy
-  "Calculates the Variational Free Energy (F) and Expected Free Energy (G) components.
-   Aggregates all dimensions of all slots for calculation."
+  "Calculates the Variational Free Energy (F) and Expected Free Energy (G) components."
   [belief-state actual-obs likelihood-fn]
   (let [internal-states (:internal-states belief-state)
-        ;; Aggregate all dimensions of all slots into Neanderthal vectors
         sorted-slots (sort-by key internal-states)
         mu-q-data (mapcat #(:position (second %)) sorted-slots)
         var-q-data (mapcat #(:variance (second %)) sorted-slots)
@@ -144,7 +129,6 @@
             (n/entry! mu-q i (double (nth mu-q-data i)))
             (n/entry! var-q i (double (nth var-q-data i))))
 
-        ;; Prior: mu=0, var=10.0 (Less restrictive prior to reduce drift pressure)
         mu-p (native/dv d)
         var-p (native/dv d)
         _ (n/scal! 0.0 mu-p)
@@ -174,23 +158,19 @@
      :risk risk}))
 
 (defn calculate-ambiguity
-  "Calculates the Ambiguity (Epistemic Value) as the expected entropy of 
-   the observation model: H[p(o|s)] = E_q[ln p(o|s)].
-   For a Gaussian observation model, this is proportional to the log variance."
+  "Calculates the Ambiguity (Epistemic Value) as the expected entropy of the observation model."
   [observation-variance]
   (let [d (n/dim observation-variance)
         ones (native/dv d)
         _ (dotimes [i d] (n/entry! ones i 1.0))
 
-        ;; H = 0.5 * sum(ln(2 * pi * e * ov))
         t1 (n/copy observation-variance)
         _ (n/scal! (* 2.0 Math/PI Math/E) t1)
         _ (vm/log! t1)]
     (* 0.5 (n/dot t1 ones))))
 
 (defn expected-free-energy
-  "Calculates the Expected Free Energy (G) for a predicted belief state.
-   G = Risk + Ambiguity."
+  "Calculates the Expected Free Energy (G) for a predicted belief state."
   [belief-state likelihood-fn]
   (let [internal-states (:internal-states belief-state)
         predicted-obs-data (likelihood-fn internal-states)
@@ -199,7 +179,7 @@
         obs-var (native/dv obs-dim)
         _ (dotimes [i obs-dim]
             (n/entry! predicted-obs i (double (nth predicted-obs-data i)))
-            (n/entry! obs-var i 0.1)) ;; Default observation variance
+            (n/entry! obs-var i 0.1))
 
         risk (calculate-risk predicted-obs (:preferences belief-state) obs-var)
         ambiguity (calculate-ambiguity obs-var)]
@@ -208,107 +188,136 @@
      :ambiguity ambiguity}))
 
 (defn belief-update
-  "Performs belief updating using Flow Matching (amortized inference).
-   Also maintains a history of internal states and observations for causal structure discovery and model training.
-   Uses the previous internal state as a 'temporal prior' to reduce drift in continuous time."
+  "Performs belief updating using Flow Matching (amortized inference) on the full state space."
   [belief-state actual-obs likelihood-fn vector-field-fn steps]
   (let [context {:observation actual-obs}
-        updated-internal-states
-        (reduce-kv
-         (fn [m id slot]
-           (let [prev-pos (:position slot)
-                 dim (count prev-pos)
-                 noise (native/dv dim)]
-             ;; Anchor noise to previous position with small variance
-             (rng/rand-normal! noise)
-             (dotimes [i dim]
-               (n/entry! noise i (+ (n/entry noise i) (nth prev-pos i))))
+        internal-states (:internal-states belief-state)
+        sorted-ids (sort (keys internal-states))
 
-             (let [pos-sample (flow-matching-sample vector-field-fn context noise steps)
-                   dim (n/dim pos-sample)
-                   new-pos (mapv (fn [i] (n/entry pos-sample i)) (range dim))]
-               (assoc m id (assoc slot :position new-pos)))))
-         {}
-         (:internal-states belief-state))
+        prev-pos-data (mapcat #(:position (get internal-states %)) sorted-ids)
+        total-dim (count prev-pos-data)
+
+        noise (native/dv total-dim)
+        _ (rng/rand-normal! noise)
+        _ (dotimes [i total-dim]
+            (n/entry! noise i (+ (n/entry noise i) (double (nth prev-pos-data i)))))
+
+        updated-state-vec (flow-matching-sample vector-field-fn context noise steps)
+
+        updated-internal-states
+        (loop [ids sorted-ids
+               offset 0
+               acc {}]
+          (if-let [id (first ids)]
+            (let [old-slot (get internal-states id)
+                  dim (count (:position old-slot))
+                  new-pos (mapv #(n/entry updated-state-vec (+ offset %)) (range dim))]
+              (recur (rest ids)
+                     (+ offset dim)
+                     (assoc acc id (assoc old-slot :position new-pos))))
+            acc))
 
         limit (or (:history-limit belief-state) 100)
-        ;; Store both internal states and the observation that led to them
+        updated-bs-temp (assoc belief-state :internal-states updated-internal-states)
+        metrics (variational-free-energy updated-bs-temp actual-obs likelihood-fn)
+
         history-entry {:internal-states updated-internal-states
-                       :observation actual-obs}
+                       :observation actual-obs
+                       :vfe (:vfe metrics)}
         history (conj (or (:history belief-state) []) history-entry)
         trimmed-history (if (> (count history) limit)
                           (subvec history (- (count history) limit))
                           history)
 
-        updated-bs (assoc belief-state
-                          :internal-states updated-internal-states
-                          :history trimmed-history)
-        metrics (variational-free-energy updated-bs actual-obs likelihood-fn)]
+        updated-bs (assoc updated-bs-temp :history trimmed-history)]
     (merge updated-bs
            {:variational-free-energy (:vfe metrics)
             :efe-components {:risk (:risk metrics)
                              :ambiguity 0.0}})))
 
+(defn- sample-prioritized-history
+  "Samples a history entry with probability proportional to its VFE (surprise)."
+  [history]
+  (let [vfes (map #(or (:vfe %) 1.0) history)
+        min-vfe (apply min vfes)
+        probs (map #(+ 1e-6 (- % min-vfe)) vfes)
+        total (reduce + probs)
+        target (rand total)]
+    (loop [acc 0.0
+           items (map vector history probs)]
+      (let [[item p] (first items)
+            new-acc (+ acc p)]
+        (if (or (>= new-acc target) (empty? (rest items)))
+          item
+          (recur new-acc (rest items)))))))
+
+(defn- generate-training-sample
+  "Generates a single Flow Matching training sample [input-v, target-v]."
+  [x1 obs state-dim obs-dim]
+  (let [x0 (native/dv state-dim)
+        _ (rng/rand-normal! x0)
+        t (rand)
+        xt (n/copy x0)
+        _ (n/scal! (- 1.0 t) xt)
+        _ (n/axpy! t x1 xt)
+
+        v-target (n/copy x1)
+        _ (n/axpy! -1.0 x0 v-target)
+
+        input-v (native/dv (+ state-dim 1 obs-dim))]
+    (dotimes [i state-dim] (n/entry! input-v i (n/entry xt i)))
+    (n/entry! input-v state-dim (double t))
+    (dotimes [i obs-dim] (n/entry! input-v (+ state-dim 1 i) (n/entry obs i)))
+    [input-v v-target]))
+
 (defn train-recognition-model
-  "Sleep Phase: Amortizes inference by training the vector-field-fn (Recognition Model)
-   to match the flows generated by the World Model using Flow Matching.
-   Randomly samples from belief history to ensure robust amortization.
-   Handles multi-dimensional slots by flattening all dimensions."
+  "Sleep Phase: Amortizes inference using Prioritized Experience Replay and Generative Replay ('Dreaming')."
   [vector-field-fn belief-state iterations]
   (if (fn? vector-field-fn)
-    ;; Fallback for simulation if not a neural network
-    (do
-      (println "Warning: vector-field-fn is a function, not a trainable network. Skipping amortization.")
-      vector-field-fn)
+    (do (println "Warning: vector-field-fn is a function, not a trainable network. Skipping amortization.")
+        vector-field-fn)
     (let [history (:history belief-state)
-          n-history (count history)]
+          n-history (count history)
+          batch-size 16]
       (if (zero? n-history)
         vector-field-fn
-        (do
+        (let [state-dim (n/mrows (:w2 vector-field-fn))
+              obs-dim (- (n/ncols (:w1 vector-field-fn)) state-dim 1)]
           (dotimes [_ iterations]
-            (let [;; 1. Randomly sample a historical experience
-                  sample (rand-nth history)
-                  internal-states (:internal-states sample)
-                  actual-obs (:observation sample)
+            (let [samples (repeatedly
+                           batch-size
+                           (fn []
+                             (if (or (< (rand) 0.5) (< n-history 2))
+                               (let [item (sample-prioritized-history history)
+                                     sorted-slots (sort-by key (:internal-states item))
+                                     x1-data (mapcat #(:position (second %)) sorted-slots)
+                                     x1 (native/dv state-dim)
+                                     _ (dotimes [i (min state-dim (count x1-data))]
+                                         (n/entry! x1 i (double (nth x1-data i))))
+                                     obs-v (native/dv obs-dim)
+                                     actual-obs (:observation item)
+                                     _ (dotimes [i (min obs-dim (count actual-obs))]
+                                         (n/entry! obs-v i (double (nth actual-obs i))))]
+                                 (generate-training-sample x1 obs-v state-dim obs-dim))
+                               (let [item (last history)
+                                     sorted-slots (sort-by key (:internal-states item))
+                                     x1-data (mapcat #(:position (second %)) sorted-slots)
+                                     x1 (native/dv state-dim)
+                                     _ (dotimes [i (min state-dim (count x1-data))]
+                                         (n/entry! x1 i (double (nth x1-data i))))
+                                     obs-data ((:likelihood-mapping belief-state) (:internal-states item))
+                                     obs-v (native/dv obs-dim)
+                                     _ (dotimes [i (min obs-dim (count obs-data))]
+                                         (n/entry! obs-v i (double (nth obs-data i))))]
+                                 (generate-training-sample x1 obs-v state-dim obs-dim)))))
 
-                  ;; 2. Aggregate all dimensions of all internal states into a single target vector x1
-                  sorted-slots (sort-by key internal-states)
-                  x1-data (mapcat #(:position (second %)) sorted-slots)
-                  d (count x1-data)
+                  input-mat (native/dge batch-size (+ state-dim 1 obs-dim))
+                  target-mat (native/dge batch-size state-dim)]
 
-                  ;; Check if dimensions match the network (handle Growth)
-                  network-state-dim (n/mrows (:w2 vector-field-fn))]
+              (dotimes [i batch-size]
+                (let [[in-v out-v] (nth samples i)]
+                  (n/copy! in-v (n/row input-mat i))
+                  (n/copy! out-v (n/row target-mat i))))
 
-              (when (= d network-state-dim)
-                (let [x1 (native/dv d)
-                      _ (dotimes [i d] (n/entry! x1 i (double (nth x1-data i))))
-
-                      ;; 3. Flow Matching: Sample x0 and interpolate
-                      x0 (native/dv d)
-                      _ (rng/rand-normal! x0)
-                      t (rand)
-                      xt (n/copy x0)
-                      _ (n/scal! (- 1.0 t) xt)
-                      _ (n/axpy! t x1 xt)
-
-                      ;; Target velocity: v = x1 - x0
-                      v-target (n/copy x1)
-                      _ (n/axpy! -1.0 x0 v-target)
-
-                      ;; Observation context
-                      obs-dim (count actual-obs)
-                      network-obs-dim (- (n/ncols (:w1 vector-field-fn)) d 1)]
-
-                  (when (= obs-dim network-obs-dim)
-                    (let [obs-v (native/dv obs-dim)
-                          _ (dotimes [i obs-dim] (n/entry! obs-v i (double (nth actual-obs i))))
-
-                          ;; Construct network input: [xt, t, obs-v]
-                          input-v (native/dv (+ d 1 obs-dim))
-                          _ (dotimes [i d] (n/entry! input-v i (n/entry xt i)))
-                          _ (n/entry! input-v d (double t))
-                          _ (dotimes [i obs-dim] (n/entry! input-v (+ d 1 i) (n/entry obs-v i)))]
-
-                      ;; 4. Update parameters using manual SGD in models.clj
-                      (models/train-on-samples! vector-field-fn input-v v-target 0.01 1)))))))
+              (models/train-batch! vector-field-fn input-mat target-mat 0.01 1)))
           vector-field-fn)))))

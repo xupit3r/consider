@@ -67,13 +67,9 @@
   (let [goal-pos 10.0
         state-dim 1
         obs-dim 1
-        hidden-dim 8
-        ;; Use a functional vector field that scales with slots
-        v-fn (fn [x t context]
-               (let [d (n/dim x)
-                     v (native/dv d)]
-                 (n/scal! 0.0 v) ;; Constant velocity for simulation
-                 v))
+        hidden-dim 16
+        ;; Use a real neural network to verify Dynamic Scaling
+        net (models/make-mlp-vector-field state-dim obs-dim hidden-dim)
 
         ;; A likelihood function that adapts to the number of slots
         flexible-likelihood (fn [states]
@@ -89,7 +85,7 @@
         agent (core/initialize-agent {:me (wm/make-slot :me [0.0])}
                                      [[goal-pos]] ;; Preferences
                                      flexible-likelihood
-                                     v-fn
+                                     net
                                      mock-llm)]
 
     (testing "Step 1: Detection and Growth"
@@ -98,6 +94,10 @@
                                                 :reasoning-iterations 2
                                                 :exploration-weight 1.0})]
         (is (= 2 (count (:internal-states (:belief-state res1)))) "Agent should have grown a new slot")
+        ;; Verify the network was expanded
+        (let [expanded-net (:vector-field-fn res1)]
+          (is (instance? consider.models.NeanderthalMLP expanded-net))
+          (is (= 2 (n/mrows (:w2 expanded-net))) "Output layer should have grown to 2"))
 
         (testing "Step 2 & 3: Historical Causal Learning"
           (let [res2 (core/step (assoc agent
@@ -206,3 +206,55 @@
         (is (= 2 (count (:position (get-in res [:belief-state :internal-states :me])))) "State should remain 2D")
         (is (some? (get-in res [:belief-state :efe-components :risk])))
         (is (some? (get-in res [:belief-state :efe-components :ambiguity])))))))
+
+(deftest test-sequential-growth
+  (testing "Agent can grow slots and networks sequentially (1 -> 2 -> 3)"
+    (let [state-dim 1
+          obs-dim 1
+          hidden-dim 16
+          net (models/make-mlp-vector-field state-dim obs-dim hidden-dim)
+
+          flexible-likelihood (fn [states]
+                                (mapv #(first (:position %))
+                                      (vals (into (sorted-map) states))))
+
+          mock-llm (llm/make-mock-llm)
+
+          agent (core/initialize-agent {:me (wm/make-slot :me [0.0])}
+                                       [[10.0]]
+                                       flexible-likelihood
+                                       net
+                                       mock-llm)]
+
+      ;; Stage 1: Grow to 2 slots
+      (let [res1 (core/step agent [0.0 5.0] {:inference-steps 5 :reasoning-iterations 1 :exploration-weight 1.0})]
+        (is (= 2 (count (:internal-states (:belief-state res1)))))
+        (is (= 2 (n/mrows (:w2 (:vector-field-fn res1)))))
+
+        ;; Stage 2: Build history for 2 slots
+        (let [res2 (loop [curr-res res1 i 0]
+                     (if (>= i 10)
+                       curr-res
+                       (recur (core/step (assoc agent
+                                                :belief-state (:belief-state curr-res)
+                                                :orchestrator-state (:orchestrator-state curr-res)
+                                                :vector-field-fn (:vector-field-fn curr-res))
+                                         [0.1 5.1]
+                                         {:inference-steps 2 :reasoning-iterations 1 :exploration-weight 1.0})
+                              (inc i))))]
+
+          (is (= 2 (n/mrows (:sparse-S (:causal-structure res2)))))
+
+          ;; Stage 3: Grow to 3 slots
+          (let [res3 (core/step (assoc agent
+                                       :belief-state (:belief-state res2)
+                                       :orchestrator-state (:orchestrator-state res2)
+                                       :vector-field-fn (:vector-field-fn res2))
+                                [0.2 5.2 10.2] ;; Third object appears
+                                {:inference-steps 5 :reasoning-iterations 1 :exploration-weight 1.0})]
+
+            (is (= 3 (count (:internal-states (:belief-state res3)))))
+            ;; Verify the network was expanded TWICE correctly
+            (let [final-net (:vector-field-fn res3)]
+              (is (= 3 (n/mrows (:w2 final-net))) "Output layer should have grown to 3")
+              (is (= 7 (n/ncols (:w1 final-net))) "Input layer should be 3 (state) + 1 (t) + 3 (obs) = 7"))))))))

@@ -65,7 +65,7 @@ Return ONLY a JSON object with these keys."))
                 :pragmatic-estimate 0.5
                 :epistemic-estimate 0.5
                 :confidence 1.0}])))
-  
+
   ProcessScorer
   (score-step [this context candidate-action]
     (let [resp (get responses [context candidate-action])]
@@ -81,37 +81,66 @@ Return ONLY a JSON object with these keys."))
   ([] (make-mock-llm {}))
   ([responses] (->MockLLM responses)))
 
-;; --- Generic API Wrapper (Conceptual) ---
+;; --- Robust JSON Parsing & Sanitization ---
 
-(defn parse-json [s]
-  (try
-    (json/read-json s :key-fn keyword)
-    (catch Exception e
-      (println "Error parsing JSON:" (.getMessage e))
-      nil)))
+(defn- extract-json-from-markdown
+  "Extracts JSON string from potential markdown code blocks."
+  [s]
+  (if-let [match (re-find #"(?s)```json\n?(.*?)\n?```" s)]
+    (second match)
+    (if-let [match (re-find #"(?s)```\n?(.*?)\n?```" s)]
+      (second match)
+      s)))
+
+(defn- clamp [v min-v max-v]
+  (max min-v (min max-v v)))
+
+(defn- sanitize-math-components
+  "Ensures all probability and estimate fields are clamped between 0 and 1."
+  [m]
+  (reduce-kv (fn [acc k v]
+               (if (and (number? v) (re-find #"prob|estimate|confidence" (name k)))
+                 (assoc acc k (clamp (double v) 0.0 1.0))
+                 (assoc acc k v)))
+             {}
+             m))
+
+(defn robust-parse-json
+  "Attempts to parse JSON from LLM response, handling markdown and providing defaults."
+  [raw-resp default-val]
+  (let [cleaned (some-> raw-resp str/trim extract-json-from-markdown)
+        parsed (try
+                 (json/read-json cleaned :key-fn keyword)
+                 (catch Exception _ nil))]
+    (cond
+      (vector? parsed) (mapv #(merge (if (vector? default-val) (first default-val) default-val)
+                                     (sanitize-math-components %))
+                             parsed)
+      (map? parsed) (let [base (if (vector? default-val) (first default-val) default-val)
+                          merged (merge base (sanitize-math-components parsed))]
+                      (if (vector? default-val) [merged] merged))
+      :else (if (vector? default-val) default-val [default-val]))))
 
 (defrecord DynamicLLM [model-name api-key provider completion-fn]
   PolicyPredictor
   (predict-candidates [this context]
     (let [prompt (prediction-prompt context)
           raw-resp (completion-fn {:model model-name :prompt prompt})
-          parsed (parse-json raw-resp)]
-      (or parsed
-          [{:candidate-action "Error: Failed to parse LLM response"
-            :prior-prob 0.0
-            :pragmatic-estimate 0.0
-            :epistemic-estimate 0.0
-            :confidence 0.0}])))
-  
+          default [{:candidate-action "Error: Invalid response"
+                    :prior-prob 0.0
+                    :pragmatic-estimate 0.0
+                    :epistemic-estimate 0.0
+                    :confidence 0.0}]]
+      (robust-parse-json raw-resp default)))
+
   ProcessScorer
   (score-step [this context candidate-action]
     (let [prompt (scoring-prompt context candidate-action)
           raw-resp (completion-fn {:model model-name :prompt prompt})
-          parsed (parse-json raw-resp)]
-      (or parsed
-          {:pragmatic-estimate 0.0
-           :epistemic-estimate 0.0
-           :confidence 0.0}))))
+          default {:pragmatic-estimate 0.0
+                   :epistemic-estimate 0.0
+                   :confidence 0.0}]
+      (robust-parse-json raw-resp default))))
 
 (defn validate-candidate-step
   "Validates a candidate step against its specification."
