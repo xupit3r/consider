@@ -60,3 +60,22 @@
             new-slots (identify-novel-entities bs actual-obs predicted-obs)]
         (is (= 1 (count new-slots)))
         (is (= [50.0] (:position (first new-slots))))))))
+
+(deftest test-growth-robustness-to-noise
+  (let [bs (-> (make-belief-state)
+               (update-slot :me [0.0] [1.0]))
+        predicted-obs [0.0]]
+    (testing "Low-level noise does not trigger new slots"
+      (let [noisy-obs [0.05] ;; Small jitter
+            new-slots (identify-novel-entities bs noisy-obs predicted-obs)]
+        (is (empty? new-slots) "Small jitter should be ignored")))
+
+    (testing "Large unexplained residual triggers growth"
+      (let [outlier-obs [500.0] ;; Massive error
+            new-slots (identify-novel-entities bs outlier-obs predicted-obs)]
+        (is (= 1 (count new-slots)) "Large residual should trigger growth")))
+
+    (testing "Extra observation dimension always triggers growth"
+      (let [extra-obs [0.0 5.0] ;; Second object appears
+            new-slots (identify-novel-entities bs extra-obs predicted-obs)]
+        (is (= 1 (count new-slots)) "Extra object should trigger exactly one new slot")))))

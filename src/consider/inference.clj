@@ -143,12 +143,12 @@
             (n/entry! mu-q i (double (nth mu-q-data i)))
             (n/entry! var-q i (double (nth var-q-data i))))
 
-        ;; Standard normal prior: mu=0, var=1
+        ;; Prior: mu=0, var=10.0 (Less restrictive prior to reduce drift pressure)
         mu-p (native/dv d)
         var-p (native/dv d)
         _ (n/scal! 0.0 mu-p)
         _ (n/scal! 0.0 var-p)
-        _ (dotimes [i d] (n/entry! var-p i 1.0))
+        _ (dotimes [i d] (n/entry! var-p i 10.0))
 
         complexity (kl-divergence mu-q var-q mu-p var-p)
 
@@ -208,15 +208,21 @@
 
 (defn belief-update
   "Performs belief updating using Flow Matching (amortized inference).
-   Also maintains a history of internal states and observations for causal structure discovery and model training."
+   Also maintains a history of internal states and observations for causal structure discovery and model training.
+   Uses the previous internal state as a 'temporal prior' to reduce drift in continuous time."
   [belief-state actual-obs likelihood-fn vector-field-fn steps]
   (let [context {:observation actual-obs}
         updated-internal-states
         (reduce-kv
          (fn [m id slot]
-           (let [dim (count (:position slot))
+           (let [prev-pos (:position slot)
+                 dim (count prev-pos)
                  noise (native/dv dim)]
+             ;; Anchor noise to previous position with small variance
              (rng/rand-normal! noise)
+             (dotimes [i dim]
+               (n/entry! noise i (+ (n/entry noise i) (nth prev-pos i))))
+
              (let [pos-sample (flow-matching-sample vector-field-fn context noise steps)
                    dim (n/dim pos-sample)
                    new-pos (mapv (fn [i] (n/entry pos-sample i)) (range dim))]
