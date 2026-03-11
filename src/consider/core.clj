@@ -19,7 +19,8 @@
         d (count slot-ids)
         n-samples (count history)
         lambda 1e-4]
-    (if (< n-samples 2)
+    ;; We need a decent number of samples for a stable covariance estimate
+    (if (< n-samples 10)
       ;; Fallback to identity with slight perturbation
       (let [theta (native/dge d d)]
         (n/scal! 0.0 theta)
@@ -32,7 +33,6 @@
                 states (:internal-states sample)]
             (dotimes [j d]
               (let [id (nth slot-ids j)
-                    ;; Use the first dimension of position for now
                     val (first (:position (get states id)))]
                 (n/entry! X i j (or val 0.0))))))
         
@@ -55,11 +55,17 @@
             (n/entry! C i i (+ (n/entry C i i) lambda)))
           
           ;; 5. Invert covariance to get precision matrix Theta
-          ;; We solve CX = I to get X = C^-1
-          (let [I (native/dge d d)]
-            (n/scal! 0.0 I)
-            (dotimes [i d] (n/entry! I i i 1.0))
-            (la/sv C I)))))))
+          (try
+            (let [I (native/dge d d)]
+              (n/scal! 0.0 I)
+              (dotimes [i d] (n/entry! I i i 1.0))
+              (la/sv C I))
+            (catch Exception _
+              ;; Final fallback if inversion fails numerically
+              (let [theta (native/dge d d)]
+                (n/scal! 0.0 theta)
+                (dotimes [i d] (n/entry! theta i i (+ 1.0 lambda)))
+                theta))))))))
 
 (defn step
   "Performs a single Active Inference cycle: Perceive -> Infer -> Learn -> Decide -> Act."
@@ -83,7 +89,6 @@
         belief-with-learning (wm/update-transition-dynamics belief-after-growth (:sparse-S causal-structure))
         
         ;; 3. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
-        ;; Update orchestrator with the new belief trajectory and causal epistemic guidance
         initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-data)})
         updated-orchestrator (-> orchestrator-state
                                  (exec/add-tree :current initial-trajectory)
