@@ -6,21 +6,55 @@
             [consider.executive :as exec]
             [consider.llm :as llm]
             [uncomplicate.neanderthal.native :as native]
-            [uncomplicate.neanderthal.core :as n]))
+            [uncomplicate.neanderthal.core :as n]
+            [uncomplicate.neanderthal.linalg :as la]))
 
 (defn- estimate-precision-matrix
-  "Estimates the precision matrix from the current belief state.
-   In a full implementation, this would use the history of internal states."
+  "Estimates the precision matrix from the history of internal states.
+   Uses shrinkage (L2 regularization) to ensure invertibility."
   [belief-state]
-  (let [internal-states (:internal-states belief-state)
-        d (count internal-states)
-        theta (native/dge d d)]
-    (n/scal! 0.0 theta)
-    (dotimes [i d] (n/entry! theta i i 1.0))
-    ;; Perturb slightly to avoid exact zero matrices if needed
-    (dotimes [i d]
-      (n/entry! theta i i (+ (n/entry theta i i) 1e-6)))
-    (n/copy theta)))
+  (let [history (:history belief-state)
+        internal-states (:internal-states belief-state)
+        slot-ids (sort (keys internal-states))
+        d (count slot-ids)
+        n-samples (count history)
+        lambda 1e-4]
+    (if (< n-samples 2)
+      ;; Fallback to identity with slight perturbation
+      (let [theta (native/dge d d)]
+        (n/scal! 0.0 theta)
+        (dotimes [i d] (n/entry! theta i i (+ 1.0 lambda)))
+        theta)
+      (let [X (native/dge n-samples d)]
+        ;; 1. Populate data matrix X
+        (dotimes [i n-samples]
+          (let [sample (nth history i)]
+            (dotimes [j d]
+              (let [id (nth slot-ids j)
+                    ;; Use the first dimension of position for now
+                    val (first (:position (get sample id)))]
+                (n/entry! X i j (or val 0.0))))))
+        
+        ;; 2. Center X
+        (let [means (native/dv d)]
+          (n/scal! 0.0 means)
+          (dotimes [j d]
+            (let [col (n/submatrix X 0 j n-samples 1)]
+              (n/entry! means j (/ (n/asum col) n-samples))))
+          (dotimes [i n-samples]
+            (dotimes [j d]
+              (n/entry! X i j (- (n/entry X i j) (n/entry means j))))))
+        
+        ;; 3. Compute sample covariance C = (X^T * X) / (n-1)
+        (let [C (n/mm (n/trans X) X)]
+          (n/scal! (/ 1.0 (dec n-samples)) C)
+          
+          ;; 4. Shrinkage: C = C + lambda * I
+          (dotimes [i d]
+            (n/entry! C i i (+ (n/entry C i i) lambda)))
+          
+          ;; 5. Invert covariance to get precision matrix Theta
+          (la/inv C))))))
 
 (defn step
   "Performs a single Active Inference cycle: Perceive -> Infer -> Learn -> Decide -> Act."

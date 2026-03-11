@@ -40,7 +40,7 @@
   [vector-field-fn context noise-sample steps]
   (let [v-fn (if (fn? vector-field-fn)
                (fn [x t] (vector-field-fn x t context))
-               (fn [x t] 
+               (fn [x t]
                  (let [obs-v (native/dv (count (:observation context)))]
                    (dotimes [i (n/dim obs-v)] (n/entry! obs-v i (double (nth (:observation context) i))))
                    (models/predict-velocity vector-field-fn x t obs-v))))]
@@ -53,22 +53,22 @@
   (let [d (n/dim mu-q)
         ones (native/dv d)
         _ (dotimes [i d] (n/entry! ones i 1.0)) ;; Initialize to ones
-        
+
         ;; term1: var-q / var-p
         t1 (n/copy var-q)
         _ (vm/div! t1 var-p)
-        
+
         ;; term2: (mu-p - mu-q)^2 / var-p
         t2 (n/copy mu-p)
         _ (n/axpy! -1.0 mu-q t2)
         _ (vm/sqr! t2)
         _ (vm/div! t2 var-p)
-        
+
         ;; term3: ln(var-p / var-q)
         t3 (n/copy var-p)
         _ (vm/div! t3 var-q)
         _ (vm/log! t3)
-        
+
         ;; Sum all terms
         res (n/copy t1)
         _ (n/axpy! 1.0 t2 res)
@@ -84,12 +84,12 @@
   (let [d (n/dim predicted-obs)
         ones (native/dv d)
         _ (dotimes [i d] (n/entry! ones i 1.0))
-        
+
         ;; term1: ln(2*pi*ov)
         t1 (n/copy observation-variance)
         _ (n/scal! (* 2.0 Math/PI) t1)
         _ (vm/log! t1)
-        
+
         ;; term2: (ao - po)^2 / ov
         t2 (n/copy actual-obs)
         _ (n/axpy! -1.0 predicted-obs t2)
@@ -111,12 +111,12 @@
           ;; For now, use the first preference as target
           pref-data (first preferences)
           _ (dotimes [i (n/dim mu-p)] (n/entry! mu-p i (double (nth pref-data i))))
-          
+
           ;; Risk = 0.5 * ((po - mp)^2 / vp)
           diff (n/copy predicted-obs)
           _ (n/axpy! -1.0 mu-p diff)
           _ (vm/sqr! diff)
-          _ (vm/div! diff observation-variance)          
+          _ (vm/div! diff observation-variance)
           ones (native/dv (n/dim predicted-obs))
           _ (dotimes [i (n/dim ones)] (n/entry! ones i 1.0))]
       (* 0.5 (n/dot diff ones)))))
@@ -129,22 +129,22 @@
         sorted-slots (sort-by key internal-states)
         mu-q-data (mapv #(first (:position (second %))) sorted-slots)
         var-q-data (mapv #(first (:variance (second %))) sorted-slots)
-        
+
         d (count mu-q-data)
         mu-q (native/dv d)
         var-q (native/dv d)
-        _ (dotimes [i d] 
+        _ (dotimes [i d]
             (n/entry! mu-q i (double (nth mu-q-data i)))
             (n/entry! var-q i (double (nth var-q-data i))))
-        
+
         mu-p (native/dv d) ;; Standard normal prior
         var-p (native/dv d)
         _ (n/scal! 0.0 mu-p)
         _ (n/scal! 0.0 var-p)
         _ (n/axpy! 1.0 (native/dv d) var-p)
-        
+
         complexity (kl-divergence mu-q var-q mu-p var-p)
-        
+
         predicted-obs-data (likelihood-fn internal-states)
         obs-dim (count predicted-obs-data)
         predicted-obs (native/dv obs-dim)
@@ -154,10 +154,10 @@
             (n/entry! predicted-obs i (double (nth predicted-obs-data i)))
             (n/entry! actual-obs-v i (double (nth actual-obs i)))
             (n/entry! obs-var i 0.1))
-        
+
         accuracy (calculate-accuracy predicted-obs actual-obs-v obs-var)
         risk (calculate-risk predicted-obs (:preferences belief-state) obs-var)
-        
+
         elbo (- accuracy complexity)]
     {:elbo elbo
      :complexity complexity
@@ -166,7 +166,8 @@
      :risk risk}))
 
 (defn belief-update
-  "Performs belief updating using Flow Matching (amortized inference)."
+  "Performs belief updating using Flow Matching (amortized inference).
+   Also maintains a history of internal states for causal structure discovery."
   [belief-state actual-obs likelihood-fn vector-field-fn steps]
   (let [context {:observation actual-obs}
         updated-internal-states
@@ -181,10 +182,18 @@
                (assoc m id (assoc slot :position new-pos)))))
          {}
          (:internal-states belief-state))
-        
-        updated-bs (assoc belief-state :internal-states updated-internal-states)
+
+        limit (or (:history-limit belief-state) 100)
+        history (conj (or (:history belief-state) []) updated-internal-states)
+        trimmed-history (if (> (count history) limit)
+                          (subvec history (- (count history) limit))
+                          history)
+
+        updated-bs (assoc belief-state
+                          :internal-states updated-internal-states
+                          :history trimmed-history)
         metrics (variational-free-energy updated-bs actual-obs likelihood-fn)]
-    (merge updated-bs 
+    (merge updated-bs
            {:variational-free-energy (:vfe metrics)
             :efe-components {:risk (:risk metrics)
                              :ambiguity 0.0}})))
@@ -205,34 +214,34 @@
           d (count x1-data)
           x1 (native/dv d)
           _ (dotimes [i d] (n/entry! x1 i (double (nth x1-data i))))
-          
+
           ;; Collect samples for Flow Matching
           x0 (native/dv d)
           _ (rng/rand-normal! x0)
-          
+
           ;; Random time point t in [0, 1]
           t (rand)
           ;; Interpolate: xt = (1-t)x0 + t x1
           xt (n/copy x0)
           _ (n/scal! (- 1.0 t) xt)
           _ (n/axpy! t x1 xt)
-          
+
           ;; Target velocity: v = x1 - x0 (for linear interpolation)
           v-target (n/copy x1)
           _ (n/axpy! -1.0 x0 v-target)
-          
+
           ;; Observation context
           predicted-obs (wm/predict-observation belief-state)
           obs-dim (count predicted-obs)
           obs-v (native/dv obs-dim)
           _ (dotimes [i obs-dim] (n/entry! obs-v i (double (nth predicted-obs i))))
-          
+
           ;; Construct network input: [xt, t, obs-v]
           input-v (native/dv (+ d 1 obs-dim))
           _ (dotimes [i d] (n/entry! input-v i (n/entry xt i)))
           _ (n/entry! input-v d (double t))
           _ (dotimes [i obs-dim] (n/entry! input-v (+ d 1 i) (n/entry obs-v i)))]
-      
+
       ;; Update parameters using manual SGD in models.clj
       (models/train-on-samples! vector-field-fn input-v v-target 0.01 iterations)
       vector-field-fn)))

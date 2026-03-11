@@ -23,12 +23,14 @@
     :variational-free-energy 0.0
     :expected-free-energy 0.0
     :efe-components {:risk 0.0 :ambiguity 0.0}
-    :preferences preferences}))
+    :preferences preferences
+    :history []
+    :history-limit 100}))
 
 (defn with-generative-model
   "Attaches likelihood and transition dynamics to the belief state."
   [belief-state likelihood-fn transition-fn]
-  (assoc belief-state 
+  (assoc belief-state
          :likelihood-mapping likelihood-fn
          :transition-dynamics transition-fn))
 
@@ -66,7 +68,7 @@
               ;; Assume single-dimension position for simplicity in matrix math for now
               pos (first (:position slot))]
           (n/entry! state-vec i (or pos 0.0))))
-      
+
       (let [next-state-vec (n/mv adjacency-matrix state-vec)
             updated-states (reduce-kv
                             (fn [m i id]
@@ -87,7 +89,7 @@
 (defn grow-slots
   "Adds new hidden state slots to the internal world model."
   [belief-state new-slots]
-  (update belief-state :internal-states merge 
+  (update belief-state :internal-states merge
           (into {} (map (fn [s] [(:entity-id s) s]) new-slots))))
 
 (defn merge-slots
@@ -126,5 +128,5 @@
   [belief-state]
   (if (s/valid? ::wm-spec/belief-state belief-state)
     belief-state
-    (throw (ex-info "Invalid belief state" 
+    (throw (ex-info "Invalid belief state"
                     {:explain (s/explain-data ::wm-spec/belief-state belief-state)}))))
