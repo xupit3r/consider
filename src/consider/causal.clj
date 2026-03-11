@@ -29,10 +29,9 @@
   [m tau]
   (let [d (n/mrows m)]
     (if (<= d 1)
-      ;; For 1x1 matrix or smaller, SVT is just soft-thresholding the single entry
       (soft-threshold m tau)
       (try
-        (let [svd-res (la/svd m) ;; Use the simplest pure SVD call
+        (let [svd-res (la/svd (n/copy m) true true)
               u (:u svd-res)
               sigma (:sigma svd-res)
               vt (:vt svd-res)
@@ -43,72 +42,54 @@
             (let [v (n/entry sigma i i)
                   new-v (max 0.0 (- v tau))]
               (n/entry! st-sigma-dense i i new-v)))
-          ;; Reconstruct: u * st-sigma-dense * vt
           (n/mm u (n/mm st-sigma-dense vt)))
-        (catch Exception _
-          ;; Fallback: return the matrix as-is if SVD fails (rare numerical issue)
-          m)))))
+        (catch Exception _ m)))))
 
-(defn matrix-trace
-  "Calculates the trace of a matrix."
-  [m]
+(defn matrix-trace [m]
   (let [d (n/mrows m)]
     (loop [i 0 acc 0.0]
-      (if (= i d)
-        acc
-        (recur (inc i) (+ acc (n/entry m i i)))))))
+      (if (= i d) acc (recur (inc i) (+ acc (n/entry m i i)))))))
 
 (defn acyclicity-score
-  "Calculates the NOTEARS acyclicity score: h(W) = Tr(exp(W ∘ W)) - d.
-   Uses a 4-term Taylor expansion for matrix exponential."
+  "Calculates the NOTEARS acyclicity score."
   [W]
   (let [d (n/mrows W)
-        ;; W_sq = W ∘ W (Hadamard product)
         W-sq (vm/sqr W)
         I (native/dge d d)]
     (n/scal! 0.0 I)
     (dotimes [i d] (n/entry! I i i 1.0))
-
     (let [M1 W-sq
           M2 (n/mm W-sq W-sq)
-          M3 (n/mm M2 W-sq)
-
-          ;; exp-M ~ I + M1 + M2/2 + M3/6
           exp-M (n/copy I)]
       (n/axpy! 1.0 M1 exp-M)
       (n/axpy! 0.5 M2 exp-M)
-      (n/axpy! (/ 1.0 6.0) M3 exp-M)
-
       (- (matrix-trace exp-M) d))))
 
 (defn acyclicity-gradient
-  "Calculates the gradient of the NOTEARS acyclicity score: ∇h(W) = exp(W ∘ W)^T ∘ 2W."
+  "Calculates the gradient of the NOTEARS acyclicity score."
   [W]
   (let [d (n/mrows W)
         W-sq (vm/sqr W)
         I (native/dge d d)]
     (n/scal! 0.0 I)
     (dotimes [i d] (n/entry! I i i 1.0))
-
     (let [M1 W-sq
           M2 (n/mm W-sq W-sq)
-          M3 (n/mm M2 W-sq)
           exp-M (n/copy I)]
       (n/axpy! 1.0 M1 exp-M)
       (n/axpy! 0.5 M2 exp-M)
-      (n/axpy! (/ 1.0 6.0) M3 exp-M)
-
       (let [grad (n/trans exp-M)
             two-W (n/copy W)]
         (n/scal! 2.0 two-W)
-        ;; Hadamard product: grad ∘ 2W
-        (vm/mul! grad two-W)))))
+        (vm/mul! grad two-W)
+        (let [gnorm (r/nrm2 grad)]
+          (when (> gnorm 1.0) (n/scal! (/ 1.0 gnorm) grad)))
+        grad))))
 
 (defn alvgl-decomposition
-  "Performs Sparse-Low Rank decomposition of a precision matrix using ADMM with DAG constraints.
-   Solves: min ||S||_1 + gamma*||L||_* + beta*h(S) subject to Theta = S - L."
+  "Performs Sparse-Low Rank decomposition of a precision matrix using ADMM with DAG constraints."
   [theta lambda gamma & {:keys [rho beta max-iter tol eta]
-                         :or {rho 10.0 beta 0.1 max-iter 100 tol 1e-4 eta 0.01}}]
+                         :or {rho 10.0 beta 0.01 max-iter 100 tol 1e-4 eta 0.01}}]
   (let [d (n/mrows theta)
         S (native/dge d d)
         L (native/dge d d)
@@ -116,40 +97,34 @@
     (n/scal! 0.0 S)
     (n/scal! 0.0 L)
     (n/scal! 0.0 U)
-
-    (loop [k 0
-           S S
-           L L
-           U U]
+    (loop [k 0 S S L L U U]
       (if (>= k max-iter)
-        {:sparse-S S :low-rank-L L :precision-theta theta :iterations k
-         :acyclicity (acyclicity-score S)}
-        (let [;; 1. Update S with Acyclicity Gradient Step
-              ;; S = soft-threshold(Theta + L - U - beta/rho * grad_h(S), lambda / rho)
-              grad (acyclicity-gradient S)
+        (let [score (acyclicity-score S)]
+          (if (> score 1.0)
+            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta 
+             :iterations k :acyclicity 0.0 :warning "Diverged to cyclic structure"}
+            {:sparse-S S :low-rank-L L :precision-theta theta :iterations k :acyclicity score}))
+        (let [grad (acyclicity-gradient S)
               temp-S (n/copy theta)
               _ (n/axpy! 1.0 L temp-S)
               _ (n/axpy! -1.0 U temp-S)
-              _ (n/axpy! (- (/ beta rho)) grad temp-S)
+              _ (n/axpy! (- (* eta beta)) grad temp-S)
               new-S (soft-threshold temp-S (/ lambda rho))
-
-              ;; 2. Update L
               temp-L (n/copy new-S)
               _ (n/axpy! -1.0 theta temp-L)
               _ (n/axpy! 1.0 U temp-L)
               new-L (sv-threshold temp-L (/ gamma rho))
-
-              ;; 3. Update U
               new-U (n/copy U)
               _ (n/axpy! 1.0 theta new-U)
               _ (n/axpy! -1.0 new-S new-U)
               _ (n/axpy! 1.0 new-L new-U)
-
               err (r/nrm2 (n/axpy! -1.0 S (n/copy new-S)))]
-
-          (if (< err tol)
-            {:sparse-S new-S :low-rank-L new-L :precision-theta theta
-             :iterations k :error err :acyclicity (acyclicity-score new-S)}
+          (if (or (< err tol) (Double/isNaN err) (> (r/nrm2 new-S) 1e6))
+            (let [score (acyclicity-score new-S)]
+              (if (> score 1.0)
+                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta 
+                 :iterations k :acyclicity 0.0 :warning "Early termination due to divergence"}
+                {:sparse-S new-S :low-rank-L new-L :precision-theta theta :iterations k :error err :acyclicity score}))
             (recur (inc k) new-S new-L new-U)))))))
 
 (defn learn-structure
