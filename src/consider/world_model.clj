@@ -55,28 +55,30 @@
 
 (defn make-causal-transition-fn
   "Creates a transition function that uses a causal adjacency matrix (B-matrix).
-   The adjacency matrix defines how states at t-1 influence states at t."
+   The adjacency matrix defines how states at t-1 influence states at t.
+   Flatten all dimensions of all slots for matrix math."
   [adjacency-matrix slot-ids]
   (fn [internal-states action]
     ;; For now, we only use the adjacency matrix to influence transitions.
-    ;; In a full implementation, 'action' would select from a set of B-matrices.
-    (let [d (count slot-ids)
-          ;; Convert internal states to a vector for matrix multiplication
+    (let [sorted-ids (sort slot-ids)
+          state-data (mapcat #(:position (get internal-states %)) sorted-ids)
+          d (count state-data)
           state-vec (native/dv d)]
       (dotimes [i d]
-        (let [slot (get internal-states (nth slot-ids i))
-              ;; Assume single-dimension position for simplicity in matrix math for now
-              pos (first (:position slot))]
-          (n/entry! state-vec i (or pos 0.0))))
+        (n/entry! state-vec i (double (nth state-data i))))
 
       (let [next-state-vec (n/mv adjacency-matrix state-vec)
-            updated-states (reduce-kv
-                            (fn [m i id]
-                              (let [new-pos [(n/entry next-state-vec i)]
-                                    old-slot (get internal-states id)]
-                                (assoc m id (assoc old-slot :position new-pos))))
-                            {}
-                            (vec slot-ids))]
+            updated-states (loop [ids sorted-ids
+                                  offset 0
+                                  acc {}]
+                             (if-let [id (first ids)]
+                               (let [old-slot (get internal-states id)
+                                     dim (count (:position old-slot))
+                                     new-pos (mapv #(n/entry next-state-vec (+ offset %)) (range dim))]
+                                 (recur (rest ids)
+                                        (+ offset dim)
+                                        (assoc acc id (assoc old-slot :position new-pos))))
+                               acc))]
         updated-states))))
 
 (defn update-transition-dynamics

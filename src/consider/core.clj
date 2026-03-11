@@ -11,39 +11,47 @@
 
 (defn- estimate-precision-matrix
   "Estimates the precision matrix from the history of internal states.
-   Uses shrinkage (L2 regularization) to ensure invertibility."
+   Uses shrinkage (L2 regularization) to ensure invertibility.
+   Flatten all dimensions of all slots for the precision matrix."
   [belief-state]
   (let [history (:history belief-state)
         internal-states (:internal-states belief-state)
         slot-ids (sort (keys internal-states))
-        d (count slot-ids)
+        
+        ;; Calculate total dimensions across all slots
+        all-dims (map (fn [id] (count (:position (get internal-states id)))) slot-ids)
+        total-d (reduce + all-dims)
         n-samples (count history)
         lambda 1e-4]
-    ;; We need a decent number of samples for a stable covariance estimate
+    
     (if (< n-samples 10)
       ;; Fallback to identity with slight perturbation
-      (let [theta (native/dge d d)]
+      (let [theta (native/dge total-d total-d)]
         (n/scal! 0.0 theta)
-        (dotimes [i d] (n/entry! theta i i (+ 1.0 lambda)))
+        (dotimes [i total-d] (n/entry! theta i i (+ 1.0 lambda)))
         theta)
-      (let [X (native/dge n-samples d)]
-        ;; 1. Populate data matrix X
+      (let [X (native/dge n-samples total-d)]
+        ;; 1. Populate data matrix X by flattening all dimensions
         (dotimes [i n-samples]
           (let [sample (nth history i)
                 states (:internal-states sample)]
-            (dotimes [j d]
-              (let [id (nth slot-ids j)
-                    val (first (:position (get states id)))]
-                (n/entry! X i j (or val 0.0))))))
+            (loop [ids slot-ids
+                   col-offset 0]
+              (when-let [id (first ids)]
+                (let [pos (:position (get states id))
+                      dim (count pos)]
+                  (dotimes [k dim]
+                    (n/entry! X i (+ col-offset k) (double (nth pos k))))
+                  (recur (rest ids) (+ col-offset dim)))))))
         
         ;; 2. Center X
-        (let [means (native/dv d)]
+        (let [means (native/dv total-d)]
           (n/scal! 0.0 means)
-          (dotimes [j d]
+          (dotimes [j total-d]
             (let [col (n/submatrix X 0 j n-samples 1)]
               (n/entry! means j (/ (n/asum col) n-samples))))
           (dotimes [i n-samples]
-            (dotimes [j d]
+            (dotimes [j total-d]
               (n/entry! X i j (- (n/entry X i j) (n/entry means j))))))
         
         ;; 3. Compute sample covariance C = (X^T * X) / (n-1)
@@ -51,20 +59,19 @@
           (n/scal! (/ 1.0 (dec n-samples)) C)
           
           ;; 4. Shrinkage: C = C + lambda * I
-          (dotimes [i d]
+          (dotimes [i total-d]
             (n/entry! C i i (+ (n/entry C i i) lambda)))
           
           ;; 5. Invert covariance to get precision matrix Theta
           (try
-            (let [I (native/dge d d)]
+            (let [I (native/dge total-d total-d)]
               (n/scal! 0.0 I)
-              (dotimes [i d] (n/entry! I i i 1.0))
+              (dotimes [i total-d] (n/entry! I i i 1.0))
               (la/sv C I))
             (catch Exception _
-              ;; Final fallback if inversion fails numerically
-              (let [theta (native/dge d d)]
+              (let [theta (native/dge total-d total-d)]
                 (n/scal! 0.0 theta)
-                (dotimes [i d] (n/entry! theta i i (+ 1.0 lambda)))
+                (dotimes [i total-d] (n/entry! theta i i (+ 1.0 lambda)))
                 theta))))))))
 
 (defn step

@@ -168,3 +168,41 @@
       ;; GUESS_GOAL G   = (1 - 0.5) - 0.1 = 0.4
       ;; Orchestrator should pick MOVE_TO_HINT (lower G)
       (is (= "MOVE_TO_HINT" (:next-action res)) "Agent should forage for the hint first"))))
+
+(deftest test-2d-navigation
+  (testing "Agent can plan and infer in a 2D space"
+    (let [;; Preferences: Be at [10.0 10.0]
+          preferences [[10.0 10.0]]
+
+          ;; 2D Likelihood: State [x y] -> Observation [x y]
+          likelihood (fn [states]
+                       (let [me (:me states)
+                             pos (:position me)]
+                         [(double (nth pos 0)) (double (nth pos 1))]))
+
+          ;; Mock LLM for 2D planning
+          mock-llm (llm/make-mock-llm
+                    {[{:role :user :content "Sensory Observation: [0.0 0.0]"}]
+                     [{:candidate-action "MOVE_UP_RIGHT" :prior-prob 0.9
+                       :pragmatic-estimate 0.8 :epistemic-estimate 0.1}
+                      {:candidate-action "STAY" :prior-prob 0.1
+                       :pragmatic-estimate 0.1 :epistemic-estimate 0.1}]})
+
+          ;; 2D state vector field (constant velocity for simulation)
+          v-fn (fn [x t context] (native/dv (n/dim x)))
+
+          agent (core/initialize-agent {:me (wm/make-slot :me [0.0 0.0])}
+                                       preferences
+                                       likelihood
+                                       v-fn
+                                       mock-llm)]
+
+      (let [sensory-data [0.0 0.0]
+            res (core/step agent sensory-data {:inference-steps 5
+                                               :reasoning-iterations 10
+                                               :exploration-weight 1.0})]
+
+        (is (= "MOVE_UP_RIGHT" (:next-action res)))
+        (is (= 2 (count (:position (get-in res [:belief-state :internal-states :me])))) "State should remain 2D")
+        (is (some? (get-in res [:belief-state :efe-components :risk])))
+        (is (some? (get-in res [:belief-state :efe-components :ambiguity])))))))
