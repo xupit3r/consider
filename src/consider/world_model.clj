@@ -103,15 +103,30 @@
     (assoc belief-state :internal-states new-states)))
 
 (defn identify-novel-entities
-  "Identifies potential new hidden states (slots) based on residual prediction errors."
+  "Identifies potential new hidden states (slots) based on residual prediction errors
+   and observation dimension mismatches."
   [belief-state actual-obs predicted-obs]
-  (let [error (mapv (fn [ao po] (Math/abs (- ao po))) actual-obs predicted-obs)
-        threshold 100.0] ;; High threshold for stability in tests
-    (if (some #(> % threshold) error)
-      ;; Create a new slot to 'explain' the error
-      [(make-slot (keyword (str "entity-" (System/currentTimeMillis)))
-                  [(first error)])]
-      [])))
+  (let [actual-count (count actual-obs)
+        predicted-count (count predicted-obs)
+        threshold 100.0
+        ;; 1. Handle surplus observations (extra objects)
+        new-entities (if (> actual-count predicted-count)
+                       (mapv (fn [obs]
+                               (make-slot (keyword (str "entity-" (System/currentTimeMillis) "-" (rand-int 1000)))
+                                          [obs]))
+                             (subvec actual-obs predicted-count))
+                       [])
+        ;; 2. Handle large errors in existing observations
+        residual-error-entities (let [common-count (min actual-count predicted-count)]
+                                  (reduce (fn [acc i]
+                                            (let [err (Math/abs (- (nth actual-obs i) (nth predicted-obs i)))]
+                                              (if (> err threshold)
+                                                (conj acc (make-slot (keyword (str "entity-residual-" (System/currentTimeMillis)))
+                                                                     [err]))
+                                                acc)))
+                                          []
+                                          (range common-count)))]
+    (vec (concat new-entities residual-error-entities))))
 
 (defn get-slot
   "Retrieves a slot from the internal states."

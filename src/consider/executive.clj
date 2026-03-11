@@ -38,7 +38,7 @@
   [orchestrator-state tree-id node-id candidates]
   (let [tree (get-in orchestrator-state [:forest tree-id])
         parent-node (get tree node-id)
-        new-nodes (map-indexed 
+        new-nodes (map-indexed
                    (fn [idx candidate]
                      (let [new-id (str node-id "-" idx)
                            ;; Convert pragmatic utility to risk: risk = 1.0 - utility
@@ -46,8 +46,8 @@
                            ambiguity (or (:epistemic-estimate candidate) 0.5)]
                        (make-node {:node-id new-id
                                    :parent-id node-id
-                                   :state (conj (:state parent-node) 
-                                                {:role :assistant 
+                                   :state (conj (:state parent-node)
+                                                {:role :assistant
                                                  :content (:candidate-action candidate)})
                                    :action (:candidate-action candidate)
                                    :prior-prob (:prior-prob candidate)
@@ -87,8 +87,8 @@
             new-visits (inc old-visits)
             updated-node (-> node
                              (assoc :visits new-visits)
-                             (update :value (fn [old-v] (/ (+ (* old-v old-visits) new-value) 
-                                                              new-visits))))]
+                             (update :value (fn [old-v] (/ (+ (* old-v old-visits) new-value)
+                                                           new-visits))))]
         (recur (assoc curr-tree curr-id updated-node)
                (:parent-id node))))))
 
@@ -99,7 +99,7 @@
         ;; Find all nodes with value > threshold (we want to MINIMIZE value/EFE)
         nodes-to-prune (filter (fn [[id node]] (> (:value node) threshold)) tree)
         ids-to-prune (set (map first nodes-to-prune))
-        
+
         ;; Function to find all descendants
         get-descendants (fn [t root-id]
                           (loop [queue [root-id]
@@ -110,7 +110,7 @@
                                     children (map :node-id (filter #(= (:parent-id %) curr) (vals t)))]
                                 (recur (into (vec (rest queue)) children)
                                        (into descendants children))))))
-        
+
         all-pruned-ids (reduce (fn [acc id] (into acc (get-descendants tree id))) ids-to-prune ids-to-prune)
         new-tree (apply dissoc tree (into all-pruned-ids ids-to-prune))]
     (assoc-in orchestrator-state [:forest tree-id] new-tree)))
@@ -123,7 +123,7 @@
         all-ids (set (keys tree))
         parent-ids (set (map :parent-id (vals tree)))
         leaf-nodes (filter #(not (contains? parent-ids (:node-id %))) (vals tree))
-        
+
         best-leaf (if (empty? leaf-nodes)
                     (get tree "root")
                     (apply min-key :value leaf-nodes))]
@@ -145,8 +145,10 @@
     (assoc-in orchestrator-state [:forest tree-id] {"root" root-node})))
 
 (defn reason
-  "Performs a specified number of reasoning iterations using MCTS with sparse pruning."
-  [orchestrator-state predictor scorer tree-id iterations exploration-weight & {:keys [prune-threshold]}]
+  "Performs a specified number of reasoning iterations using MCTS with sparse pruning.
+   Uses the generative model (if provided) to refine the Expected Free Energy (G) calculation."
+  [orchestrator-state predictor scorer tree-id iterations exploration-weight
+   & {:keys [prune-threshold likelihood-fn transition-fn]}]
   (loop [state orchestrator-state
          i iterations]
     (if (zero? i)
@@ -158,22 +160,42 @@
             ;; 2. Expansion (via LLM predictor)
             candidates (llm/predict-candidates predictor (:state leaf))
             state-after-expansion (expand-node state tree-id leaf-id candidates)
-            ;; 3. Evaluation (via LLM scorer & Causal Model)
+            ;; 3. Evaluation (Refined Expected Free Energy)
             avg-heuristic-value (let [avg-pragmatic (/ (reduce + (map :pragmatic-estimate candidates)) (max 1 (count candidates)))
                                       avg-epistemic (/ (reduce + (map :epistemic-estimate candidates)) (max 1 (count candidates)))
-                                      ;; G = Risk + Ambiguity. Risk = 1.0 - Utility
-                                      llm-val (+ (- 1.0 avg-pragmatic) avg-epistemic)
+                                      ;; LLM's heuristic G: Risk + Ambiguity
+                                      llm-g (+ (- 1.0 avg-pragmatic) avg-epistemic)
+
+                                      ;; Model's rigorous G (if world model functions are available)
+                                      model-g (if (and likelihood-fn transition-fn)
+                                                ;; For now, use a simple one-step G estimate
+                                                (let [meta-bs (:belief-state (meta orchestrator-state))
+                                                      ;; Simulate current policy step
+                                                      ;; We use the action from the leaf node (or last candidate)
+                                                      action (or (:action leaf) "STAY")
+                                                      pred-states (transition-fn (:internal-states meta-bs) action)
+                                                      pred-bs (assoc meta-bs :internal-states pred-states)
+                                                      ;; Calculate EFE using inference module
+                                                      ;; Note: In a full implementation, we would recurse deeper.
+                                                      efe-res (try
+                                                                (let [inf-ns (find-ns 'consider.inference)
+                                                                      efe-fn (ns-resolve inf-ns 'expected-free-energy)]
+                                                                  (efe-fn pred-bs likelihood-fn))
+                                                                (catch Exception _ nil))]
+                                                  (or (:g efe-res) llm-g))
+                                                llm-g)
+
                                       ;; Optional: calculate causal epistemic value (ambiguity reduction)
                                       causal-val (if-let [amb-fn (get (meta orchestrator-state) :causal-ambiguity-fn)]
                                                    (amb-fn (:state leaf))
                                                    0.0)]
-                                  ;; Higher causal-val means LOWER ambiguity.
-                                  (- llm-val causal-val))
+                                  ;; Final G estimate: Model G adjusted by causal uncertainty reduction
+                                  (- model-g causal-val))
             ;; 4. Backpropagation
             current-tree (get-in state-after-expansion [:forest tree-id])
             updated-tree (update-node-value current-tree leaf-id avg-heuristic-value)
             state-with-updated-tree (assoc-in state-after-expansion [:forest tree-id] updated-tree)
-            
+
             ;; 5. Sparse Activation (Optional Pruning)
             final-state (if prune-threshold
                           (prune-branches state-with-updated-tree tree-id prune-threshold)

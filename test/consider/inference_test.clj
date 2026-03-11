@@ -70,12 +70,48 @@
         obs-dim 1
         hidden-dim 4
         net (models/make-mlp-vector-field state-dim obs-dim hidden-dim)
-        
+
         bs (-> (wm/make-belief-state {} [[2.0]])
                (wm/update-slot :e1 [1.0] [1.0])
                (wm/with-generative-model (fn [states] [1.0]) (fn [s a] s)))
-        
+
         trained-net (train-recognition-model net bs 5)]
     (is (not (fn? trained-net)))
     (is (some? trained-net))
     (is (instance? consider.models.NeanderthalMLP trained-net))))
+
+(deftest test-amortization-performance
+  (let [state-dim 1
+        obs-dim 1
+        hidden-dim 16
+        net (models/make-mlp-vector-field state-dim obs-dim hidden-dim)
+
+        target-pos 5.0
+        actual-obs [target-pos]
+        likelihood-fn (fn [states] [(first (:position (get states :e1)))])
+
+        ;; Initial belief state (far from target)
+        initial-bs (-> (wm/make-belief-state {} [[0.0]])
+                       (wm/update-slot :e1 [0.0] [1.0])
+                       (wm/with-generative-model likelihood-fn (fn [s a] s)))
+
+        ;; 1. Measure initial performance (average VFE over multiple samples)
+        initial-vfe (let [results (repeatedly 5 #(belief-update initial-bs actual-obs likelihood-fn net 10))]
+                      (/ (reduce + (map :variational-free-energy results)) 5.0))
+
+        ;; 2. Perform "Sleep" phase: train recognition model on the target state
+        ;; We need to populate history first
+        bs-with-history (assoc initial-bs :history [{:internal-states {:e1 (wm/make-slot :e1 [target-pos])}
+                                                     :observation actual-obs}])
+
+        trained-net (train-recognition-model net bs-with-history 200)
+
+        ;; 3. Measure trained performance
+        final-vfe (let [results (repeatedly 5 #(belief-update initial-bs actual-obs likelihood-fn trained-net 10))]
+                    (/ (reduce + (map :variational-free-energy results)) 5.0))]
+
+    (testing "Amortization improves inference"
+      (println "Initial Avg VFE:" initial-vfe)
+      (println "Final Avg VFE:" final-vfe)
+      ;; VFE should decrease because accuracy increases when samples are closer to target-pos
+      (is (< final-vfe initial-vfe)))))

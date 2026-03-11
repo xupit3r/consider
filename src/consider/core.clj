@@ -28,11 +28,12 @@
       (let [X (native/dge n-samples d)]
         ;; 1. Populate data matrix X
         (dotimes [i n-samples]
-          (let [sample (nth history i)]
+          (let [sample (nth history i)
+                states (:internal-states sample)]
             (dotimes [j d]
               (let [id (nth slot-ids j)
                     ;; Use the first dimension of position for now
-                    val (first (:position (get sample id)))]
+                    val (first (:position (get states id)))]
                 (n/entry! X i j (or val 0.0))))))
         
         ;; 2. Center X
@@ -54,7 +55,11 @@
             (n/entry! C i i (+ (n/entry C i i) lambda)))
           
           ;; 5. Invert covariance to get precision matrix Theta
-          (la/inv C))))))
+          ;; We solve CX = I to get X = C^-1
+          (let [I (native/dge d d)]
+            (n/scal! 0.0 I)
+            (dotimes [i d] (n/entry! I i i 1.0))
+            (la/sv C I)))))))
 
 (defn step
   "Performs a single Active Inference cycle: Perceive -> Infer -> Learn -> Decide -> Act."
@@ -82,13 +87,10 @@
         initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-data)})
         updated-orchestrator (-> orchestrator-state
                                  (exec/add-tree :current initial-trajectory)
-                                 (with-meta {:causal-ambiguity-fn 
+                                 (with-meta {:belief-state belief-with-learning
+                                             :causal-ambiguity-fn 
                                              (fn [trajectory]
-                                               ;; Heuristic: Epistemic value is higher if the causal model is complex
-                                               ;; but has low acyclicity score (clear DAG).
                                                (let [acyclicity (:acyclicity causal-structure)
-                                                     ;; High acyclicity means high ambiguity (unclear causal direction)
-                                                     ;; We want to MINIMIZE acyclicity.
                                                      ambiguity-score (Math/exp (or acyclicity 0.0))]
                                                  (/ 1.0 (max 1e-6 ambiguity-score))))}))
         
@@ -98,7 +100,9 @@
                                            :current 
                                            reasoning-iterations 
                                            exploration-weight 
-                                           :prune-threshold prune-threshold)
+                                           :prune-threshold prune-threshold
+                                           :likelihood-fn (:likelihood-mapping belief-with-learning)
+                                           :transition-fn (:transition-dynamics belief-with-learning))
         
         ;; 4. ACT: Extract the best policy
         best-policy (exec/extract-best-policy reasoned-orchestrator :current)

@@ -32,7 +32,7 @@
         expanded-state (expand-node initial-state :main "root" candidates)
         tree (get-in expanded-state [:forest :main])
         best-id (select-best-node tree "root" 1.0)]
-    ;; Both children have 0 visits, so select-best-node (with -infinity for zero visits) should return one of them.
+    ;; Both children have 0 visits, so select-best-node should return one of them (min-key on negative-infinity)
     (is (contains? #{"root-0" "root-1"} best-id))))
 
 (deftest test-update-node-value
@@ -40,23 +40,24 @@
         tree (get-in initial-state [:forest :main])
         updated-tree (update-node-value tree "root" 0.1)]
     (is (= 1 (:visits (get updated-tree "root"))))
-    ;; Initial visits was 0, so (1.0 * 0 + 0.1) / 1 = 0.1
     (is (= 0.1 (:value (get updated-tree "root"))))))
 
 (deftest test-extract-best-policy
   (let [initial-state (make-initial-orchestrator-state [])
-        candidates [{:candidate-action "Action 1" :prior-prob 0.5 :pragmatic-estimate 0.1 :epistemic-estimate 0.1 :confidence 1.0}
-                    {:candidate-action "Action 2" :prior-prob 0.5 :pragmatic-estimate 0.8 :epistemic-estimate 0.8 :confidence 1.0}]
+        candidates [{:candidate-action "Action 1" :prior-prob 0.5 :pragmatic-estimate 0.9 :epistemic-estimate 0.1 :confidence 1.0}
+                    {:candidate-action "Action 2" :prior-prob 0.5 :pragmatic-estimate 0.1 :epistemic-estimate 0.9 :confidence 1.0}]
         expanded-state (expand-node initial-state :main "root" candidates)
         policy (extract-best-policy expanded-state :main)]
+    ;; Action 1: G = (1-0.9) + 0.1 = 0.2
+    ;; Action 2: G = (1-0.1) + 0.9 = 1.8
     (is (= ["Action 1"] policy))))
 
 (deftest test-prune-branches
   (let [initial-state (make-initial-orchestrator-state [])
-        candidates [{:candidate-action "Good" :prior-prob 0.5 :pragmatic-estimate 0.1 :epistemic-estimate 0.1 :confidence 1.0}
-                    {:candidate-action "Bad" :prior-prob 0.5 :pragmatic-estimate 0.9 :epistemic-estimate 0.9 :confidence 1.0}]
+        candidates [{:candidate-action "Good" :prior-prob 0.5 :pragmatic-estimate 0.9 :epistemic-estimate 0.1 :confidence 1.0}
+                    {:candidate-action "Bad" :prior-prob 0.5 :pragmatic-estimate 0.1 :epistemic-estimate 0.9 :confidence 1.0}]
         expanded-state (expand-node initial-state :main "root" candidates)
-        pruned-state (prune-branches expanded-state :main 1.0)] ;; Bad has value 1.8
+        pruned-state (prune-branches expanded-state :main 1.0)] ;; Good=0.2, Bad=1.8
     (is (= 2 (count (get-in pruned-state [:forest :main]))))
     (is (contains? (get-in pruned-state [:forest :main]) "root-0"))
     (is (not (contains? (get-in pruned-state [:forest :main]) "root-1")))))

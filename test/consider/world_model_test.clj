@@ -49,3 +49,14 @@
   (let [bs (make-belief-state)]
     (is (validate-belief-state bs))
     (is (thrown? Exception (validate-belief-state (assoc bs :internal-states {:e1 {:invalid :data}}))))))
+
+(deftest test-novelty-identification
+  (let [bs (-> (make-belief-state)
+               (update-slot :e1 [10.0] [1.0]))]
+    (testing "Detecting an unmodeled observation (Novel Entity)"
+      ;; Case: actual observation has 2 objects, prediction only has 1
+      (let [actual-obs [10.0 50.0]
+            predicted-obs [10.0]
+            new-slots (identify-novel-entities bs actual-obs predicted-obs)]
+        (is (= 1 (count new-slots)))
+        (is (= [50.0] (:position (first new-slots))))))))
