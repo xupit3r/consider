@@ -54,13 +54,16 @@
   (assoc-in belief-state [:internal-states id] (make-slot id position variance)))
 
 (defn make-causal-transition-fn
-  "Creates a transition function that uses a causal adjacency matrix (B-matrix).
-   The adjacency matrix defines how states at t-1 influence states at t.
-   Flatten all dimensions of all slots for matrix math."
+  "Creates a transition function that supports interventions (do-calculus).
+   The adjacency matrix defines natural evolution.
+   The 'action' can now include an 'intervention' map {slot-id new-pos}."
   [adjacency-matrix slot-ids]
   (fn [internal-states action]
-    ;; For now, we only use the adjacency matrix to influence transitions.
     (let [sorted-ids (sort slot-ids)
+          ;; Extract intervention from action if present (e.g., {:type :do :target :me :value [1.0]})
+          intervention (when (and (map? action) (= (:type action) :do))
+                         action)
+
           state-data (mapcat #(:position (get internal-states %)) sorted-ids)
           d (count state-data)
           state-vec (native/dv d)]
@@ -74,7 +77,10 @@
                              (if-let [id (first ids)]
                                (let [old-slot (get internal-states id)
                                      dim (count (:position old-slot))
-                                     new-pos (mapv #(n/entry next-state-vec (+ offset %)) (range dim))]
+                                     ;; If this slot is being intervened upon, use the intervention value
+                                     new-pos (if (and intervention (= id (:target intervention)))
+                                               (:value intervention)
+                                               (mapv #(n/entry next-state-vec (+ offset %)) (range dim)))]
                                  (recur (rest ids)
                                         (+ offset dim)
                                         (assoc acc id (assoc old-slot :position new-pos))))

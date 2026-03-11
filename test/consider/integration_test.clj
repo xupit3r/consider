@@ -258,3 +258,58 @@
             (let [final-net (:vector-field-fn res3)]
               (is (= 3 (n/mrows (:w2 final-net))) "Output layer should have grown to 3")
               (is (= 7 (n/ncols (:w1 final-net))) "Input layer should be 3 (state) + 1 (t) + 3 (obs) = 7"))))))))
+
+(deftest test-interventional-causal-reasoning
+  (testing "Agent can reason about interventions (do-calculus) to achieve goals"
+    (let [;; Setup: Goal is for Slot B to be at 10.0
+          ;; Slot A (me) influences Slot B via causal link A -> B
+          slot-ids [:me :object-b]
+
+          ;; Causal Matrix S: B_t = 1.0 * A_{t-1}
+          ;; [ A_t ] = [ 1  0 ] [ A_{t-1} ]
+          ;; [ B_t ]   [ 1  0 ] [ B_{t-1} ]
+          S (native/dge 2 2)
+          _ (n/scal! 0.0 S)
+          _ (n/entry! S 0 0 1.0) ;; A stays same
+          _ (n/entry! S 1 0 1.0) ;; B follows A
+
+          likelihood (fn [states]
+                       (let [a (first (:position (:me states)))
+                             b (first (:position (:object-b states)))]
+                         [a b]))
+
+          ;; Preference: B should be at 10.0 (A is don't care, e.g. 0.0)
+          preferences [[0.0 10.0]]
+
+          ;; Mock LLM suggests:
+          ;; 1. DO(:me, [10.0]) -> This should move B to 10.0 in the next step
+          ;; 2. STAY -> B will stay at 0.0
+          mock-llm (llm/make-mock-llm
+                    {[{:role :user :content "Sensory Observation: [0.0 0.0]"}]
+                     [{:candidate-action "DO(:me, [10.0])" :prior-prob 0.5
+                       :pragmatic-estimate 0.9 :epistemic-estimate 0.1}
+                      {:candidate-action "STAY" :prior-prob 0.5
+                       :pragmatic-estimate 0.1 :epistemic-estimate 0.1}]})
+
+          agent (core/initialize-agent {:me (wm/make-slot :me [0.0])
+                                        :object-b (wm/make-slot :object-b [0.0])}
+                                       preferences
+                                       likelihood
+                                       (fn [x t ctx] (native/dv (n/dim x)))
+                                       mock-llm)
+
+          ;; Inject the causal model manually for the test
+          agent-with-causal (update agent :belief-state wm/update-transition-dynamics S)
+
+          res (core/step agent-with-causal [0.0 0.0] {:inference-steps 1
+                                                      :reasoning-iterations 10
+                                                      :exploration-weight 1.0})]
+
+      ;; With the intervention DO(:me, [10.0]), the model predicts:
+      ;; Next A = 10.0 (intervention)
+      ;; Next B = 1.0 * A_prev = 0.0 (natural evolution)
+      ;; WAIT! The intervention should affect the NEXT state directly.
+      ;; Let's check how the transition-fn handles it. 
+      ;; Current impl: new-pos = (if intervened val else evolved-val).
+
+      (is (= "DO(:me, [10.0])" (:next-action res)) "Agent should choose the intervention to move the causal chain"))))

@@ -144,9 +144,22 @@
                               :prior-prob 1.0})]
     (assoc-in orchestrator-state [:forest tree-id] {"root" root-node})))
 
+(defn- parse-interventional-action
+  "Attempts to parse a string action into a structured intervention map.
+   Format: 'DO(target-id, [val1, val2])'"
+  [action-str]
+  (try
+    (if-let [match (re-find #"DO\((:[^,]+),\s*\[([^\]]+)\]\)" action-str)]
+      (let [target (keyword (subs (second match) 1)) ;; Remove leading :
+            values (mapv #(Double/parseDouble %) (clojure.string/split (last match) #",\s*"))]
+        {:type :do :target target :value values})
+      action-str)
+    (catch Exception _ action-str)))
+
 (defn reason
   "Performs a specified number of reasoning iterations using MCTS with sparse pruning.
-   Uses the generative model (if provided) to refine the Expected Free Energy (G) calculation."
+   Uses the generative model (if provided) to refine the Expected Free Energy (G) calculation.
+   Supports interventional actions (do-calculus)."
   [orchestrator-state predictor scorer tree-id iterations exploration-weight
    & {:keys [prune-threshold likelihood-fn transition-fn]}]
   (loop [state orchestrator-state
@@ -164,14 +177,15 @@
             avg-heuristic-value (let [avg-pragmatic (/ (reduce + (map :pragmatic-estimate candidates)) (max 1 (count candidates)))
                                       avg-epistemic (/ (reduce + (map :epistemic-estimate candidates)) (max 1 (count candidates)))
                                       ;; G = Risk - InformationGain. Risk = 1.0 - Utility
-                                      ;; Higher epistemic value should REDUCE G.
                                       llm-g (- (- 1.0 avg-pragmatic) avg-epistemic)
 
                                       ;; Model's rigorous G (if world model functions are available)
                                       model-g (if (and likelihood-fn transition-fn)
-                                                ;; For now, use a simple one-step G estimate
                                                 (let [meta-bs (:belief-state (meta orchestrator-state))
-                                                      action (or (:action leaf) "STAY")
+                                                      action-str (or (:action leaf) "STAY")
+                                                      ;; NEW: Support interventional parsing
+                                                      action (parse-interventional-action action-str)
+
                                                       pred-states (transition-fn (:internal-states meta-bs) action)
                                                       pred-bs (assoc meta-bs :internal-states pred-states)
                                                       efe-res (try
@@ -179,14 +193,11 @@
                                                                       efe-fn (ns-resolve inf-ns 'expected-free-energy)]
                                                                   (efe-fn pred-bs likelihood-fn))
                                                                 (catch Exception _ nil))]
-                                                  ;; Note: if model-g is Risk + Ambiguity, we still subtract avg-epistemic
-                                                  ;; to account for information gain about hidden states not in the model.
                                                   (if efe-res
                                                     (- (:g efe-res) avg-epistemic)
                                                     llm-g))
                                                 llm-g)
 
-                                      ;; Optional: calculate causal epistemic value (ambiguity reduction)
                                       causal-val (if-let [amb-fn (get (meta orchestrator-state) :causal-ambiguity-fn)]
                                                    (amb-fn (:state leaf))
                                                    0.0)]
