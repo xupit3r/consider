@@ -130,3 +130,41 @@
         (is (not (empty? (:policy res4))))
         (is (some? (get-in res4 [:belief-state :efe-components :risk])))
         (is (some? (get-in res4 [:belief-state :efe-components :ambiguity])))))))
+
+(deftest test-active-foraging
+  (testing "Agent prioritizes information-seeking (Epistemic Value) over risky exploitation"
+    (let [;; Likelihood: deterministic mapping from position to observation
+          ;; If position is 1.0 (Hint), reveal Goal at 10.0. Otherwise Goal is hidden (0.0).
+          likelihood (fn [states]
+                       (let [me-pos (first (:position (get states :me)))
+                             goal-target 10.0]
+                         [me-pos (if (> me-pos 0.9) goal-target 0.0)]))
+
+          ;; Preferences: Be at the Goal Location (10.0)
+          preferences [[10.0 10.0]]
+
+          ;; Mock LLM:
+          ;; 1. MOVE_TO_HINT: low pragmatic (far from goal), high epistemic (it's a hint)
+          ;; 2. GUESS_GOAL: medium pragmatic (might be goal), low epistemic
+          mock-llm (llm/make-mock-llm
+                    {[{:role :user :content "Sensory Observation: [0.0 0.0]"}]
+                     [{:candidate-action "MOVE_TO_HINT" :prior-prob 0.5
+                       :pragmatic-estimate 0.1 :epistemic-estimate 0.9}
+                      {:candidate-action "GUESS_GOAL" :prior-prob 0.5
+                       :pragmatic-estimate 0.5 :epistemic-estimate 0.1}]})
+
+          agent (core/initialize-agent {:me (wm/make-slot :me [0.0])}
+                                       preferences
+                                       likelihood
+                                       (fn [x t ctx] (native/dv (n/dim x)))
+                                       mock-llm)
+
+          ;; Run reasoning
+          res (core/step agent [0.0 0.0] {:inference-steps 1
+                                          :reasoning-iterations 10
+                                          :exploration-weight 1.0})]
+
+      ;; MOVE_TO_HINT G = (1 - 0.1) - 0.9 = 0.0
+      ;; GUESS_GOAL G   = (1 - 0.5) - 0.1 = 0.4
+      ;; Orchestrator should pick MOVE_TO_HINT (lower G)
+      (is (= "MOVE_TO_HINT" (:next-action res)) "Agent should forage for the hint first"))))

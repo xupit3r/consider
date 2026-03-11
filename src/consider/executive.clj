@@ -163,26 +163,27 @@
             ;; 3. Evaluation (Refined Expected Free Energy)
             avg-heuristic-value (let [avg-pragmatic (/ (reduce + (map :pragmatic-estimate candidates)) (max 1 (count candidates)))
                                       avg-epistemic (/ (reduce + (map :epistemic-estimate candidates)) (max 1 (count candidates)))
-                                      ;; LLM's heuristic G: Risk + Ambiguity
-                                      llm-g (+ (- 1.0 avg-pragmatic) avg-epistemic)
+                                      ;; G = Risk - InformationGain. Risk = 1.0 - Utility
+                                      ;; Higher epistemic value should REDUCE G.
+                                      llm-g (- (- 1.0 avg-pragmatic) avg-epistemic)
 
                                       ;; Model's rigorous G (if world model functions are available)
                                       model-g (if (and likelihood-fn transition-fn)
                                                 ;; For now, use a simple one-step G estimate
                                                 (let [meta-bs (:belief-state (meta orchestrator-state))
-                                                      ;; Simulate current policy step
-                                                      ;; We use the action from the leaf node (or last candidate)
                                                       action (or (:action leaf) "STAY")
                                                       pred-states (transition-fn (:internal-states meta-bs) action)
                                                       pred-bs (assoc meta-bs :internal-states pred-states)
-                                                      ;; Calculate EFE using inference module
-                                                      ;; Note: In a full implementation, we would recurse deeper.
                                                       efe-res (try
                                                                 (let [inf-ns (find-ns 'consider.inference)
                                                                       efe-fn (ns-resolve inf-ns 'expected-free-energy)]
                                                                   (efe-fn pred-bs likelihood-fn))
                                                                 (catch Exception _ nil))]
-                                                  (or (:g efe-res) llm-g))
+                                                  ;; Note: if model-g is Risk + Ambiguity, we still subtract avg-epistemic
+                                                  ;; to account for information gain about hidden states not in the model.
+                                                  (if efe-res
+                                                    (- (:g efe-res) avg-epistemic)
+                                                    llm-g))
                                                 llm-g)
 
                                       ;; Optional: calculate causal epistemic value (ambiguity reduction)
