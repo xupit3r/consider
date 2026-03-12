@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "."]
+    },
+    "google-scholar": {
+      "command": "ai/mcp-servers/Google-Scholar-MCP-Server/venv/bin/python3",
+      "args": ["ai/mcp-servers/Google-Scholar-MCP-Server/google_scholar_server.py"]
+    },
+    "clojure-mcp": {
+      "command": "clojure",
+      "args": ["-Tmcp", "start", ":config-profile", "default"]
+    }
+  }
+}
