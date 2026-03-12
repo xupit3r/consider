@@ -10,7 +10,7 @@
       ]
     },
     "fetch": {
-      "command": "/home/joe/.local/bin/uvx",
+      "command": "uvx",
       "args": [
         "mcp-server-fetch"
       ]
@@ -20,15 +20,21 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "/home/joe/code/consider"
+        "."
       ]
     },
     "git": {
-      "command": "/home/joe/.local/bin/uvx",
+      "command": "uvx",
       "args": [
         "mcp-server-git",
         "--repository",
-        "/home/joe/code/consider"
+        "."
+      ]
+    },
+    "google-scholar": {
+      "command": "ai/mcp-servers/Google-Scholar-MCP-Server/venv/bin/python3",
+      "args": [
+        "ai/mcp-servers/Google-Scholar-MCP-Server/google_scholar_server.py"
       ]
     }
   },

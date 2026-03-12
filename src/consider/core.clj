@@ -98,7 +98,6 @@
                                     vector-field-fn)
         
         ;; 2. PERCEIVE & INFER: Update beliefs based on sensory data (Minimize VFE)
-        ;; Now using the correctly-dimensioned belief and vector field
         sensory-v (if (vector? sensory-data) sensory-data [sensory-data])
         updated-belief (inf/belief-update belief-after-growth sensory-v likelihood-fn vector-field-after-growth inference-steps)
         
@@ -161,3 +160,37 @@
    :likelihood-fn likelihood-fn
    :vector-field-fn vector-field-fn
    :llm-system llm-system})
+
+(defn initialize-foraging-agent
+  "Initializes an agent configured for web foraging.
+   Sets up knowledge-specific likelihood/transition functions and
+   a 6-dimensional observation space for knowledge metrics.
+
+   Options:
+     :knowledge-goals - vector of topic strings
+     :llm-system - LLM implementing PolicyPredictor + ProcessScorer
+     :vector-field-fn - flow field for inference (or nil for default)"
+  [opts]
+  (let [goals (or (:knowledge-goals opts) [])
+        llm-system (:llm-system opts)
+        ;; Knowledge domain starts with one slot per goal (or one default)
+        initial-slots (if (seq goals)
+                        (into {} (map-indexed
+                                  (fn [i goal]
+                                    (let [id (keyword (str "domain-" i))]
+                                      [id (wm/make-knowledge-slot id
+                                                                   [0.0 0.0 0.0 0.0 0.5 0.5]
+                                                                   [1.0 1.0 1.0 1.0 1.0 1.0])]))
+                                  goals))
+                        {:domain-0 (wm/make-knowledge-slot :domain-0
+                                                            [0.0 0.0 0.0 0.0 0.5 0.5]
+                                                            [1.0 1.0 1.0 1.0 1.0 1.0])})
+        ;; Preferences: goal-like observations (high topic similarity, high quality)
+        preferences (if (seq goals)
+                      [[0.0 5.0 0.0 0.0 1.0 1.0]]
+                      [])
+        likelihood-fn (wm/knowledge-likelihood-fn nil)
+        transition-fn (wm/knowledge-transition-fn)
+        vector-field-fn (or (:vector-field-fn opts)
+                            (fn [x t context] (native/dv (n/dim x))))]
+    (initialize-agent initial-slots preferences likelihood-fn vector-field-fn llm-system)))

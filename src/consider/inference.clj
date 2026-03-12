@@ -206,15 +206,19 @@
             (n/entry! noise i (+ (n/entry noise i) (double (nth prev-pos-data i)))))
 
         updated-state-vec (flow-matching-sample vector-field-fn context noise steps)
+        
+        ;; Ensure we handle dimension mismatch gracefully
+        actual-total-dim (n/dim updated-state-vec)
 
         updated-internal-states
         (loop [ids sorted-ids
                offset 0
                acc {}]
-          (if-let [id (first ids)]
-            (let [old-slot (get internal-states id)
+          (if (and (seq ids) (< offset actual-total-dim))
+            (let [id (first ids)
+                  old-slot (get internal-states id)
                   dim (count (:position old-slot))
-                  new-pos (mapv #(n/entry updated-state-vec (+ offset %)) (range dim))]
+                  new-pos (mapv #(n/entry updated-state-vec (+ offset %)) (range (min dim (- actual-total-dim offset))))]
               (recur (rest ids)
                      (+ offset dim)
                      (assoc acc id (assoc old-slot :position new-pos))))

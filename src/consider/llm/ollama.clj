@@ -42,6 +42,24 @@
                    :confidence 0.0}]
       (llm/robust-parse-json raw-resp default))))
 
+(extend-type OllamaLLM
+  llm/KnowledgeExtractor
+  (extract-knowledge [this text entities]
+    (let [completion-fn (fn [prompt] (generate-completion (:base-url this) (:model-name this) prompt))]
+      (require '[consider.web.knowledge :as wk])
+      ((resolve 'consider.web.knowledge/text-to-triples) completion-fn text entities)))
+  (formulate-query [this gaps goals]
+    (let [completion-fn (fn [prompt] (generate-completion (:base-url this) (:model-name this) prompt))]
+      (require '[consider.web.knowledge :as wk])
+      ((resolve 'consider.web.knowledge/formulate-search-query) completion-fn gaps goals))))
+
+(defn make-ollama-completion-fn
+  "Creates a simple completion function suitable for knowledge extraction.
+   Returns a function: prompt-string -> response-string."
+  ([model-name] (make-ollama-completion-fn model-name "http://localhost:11434"))
+  ([model-name base-url]
+   (fn [prompt] (generate-completion base-url model-name prompt))))
+
 (defn make-ollama-llm
   "Creates an OllamaLLM instance.
    Defaults to localhost:11434 if no base-url is provided."

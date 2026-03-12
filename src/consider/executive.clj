@@ -184,6 +184,45 @@
                               :prior-prob 1.0})]
     (assoc-in orchestrator-state [:forest tree-id] {"root" root-node})))
 
+;; --- Web Action Predictor ---
+
+(defrecord WebActionPredictor [frontier-fn gap-fn]
+  llm/PolicyPredictor
+  (predict-candidates [this context]
+    (let [frontier-urls (when frontier-fn (frontier-fn))
+          gap-queries (when gap-fn (gap-fn))
+          ;; Convert frontier URLs to candidates
+          url-candidates (mapv (fn [{:keys [url efe-score]}]
+                                 {:candidate-action (str "VISIT:" url)
+                                  :prior-prob (max 0.01 (- 1.0 (min 1.0 (or efe-score 0.5))))
+                                  :pragmatic-estimate (max 0.01 (- 1.0 (or efe-score 0.5)))
+                                  :epistemic-estimate 0.5
+                                  :confidence 0.6})
+                               (take 3 (or frontier-urls [])))
+          ;; Convert gaps to search query candidates
+          query-candidates (mapv (fn [gap]
+                                   {:candidate-action (str "SEARCH:" gap)
+                                    :prior-prob 0.3
+                                    :pragmatic-estimate 0.4
+                                    :epistemic-estimate 0.8
+                                    :confidence 0.4})
+                                 (take 2 (or gap-queries [])))]
+      (let [all (into url-candidates query-candidates)]
+        (if (empty? all)
+          [{:candidate-action "WAIT"
+            :prior-prob 1.0
+            :pragmatic-estimate 0.1
+            :epistemic-estimate 0.1
+            :confidence 1.0}]
+          all)))))
+
+(defn make-web-action-predictor
+  "Creates a WebActionPredictor for web foraging.
+   frontier-fn: () -> [{:url :efe-score}] — returns top frontier URLs
+   gap-fn: () -> [string] — returns knowledge gap descriptions"
+  [frontier-fn gap-fn]
+  (->WebActionPredictor frontier-fn gap-fn))
+
 (defn reason
   "Performs reasoning using MCTS."
   [orchestrator-state predictor scorer tree-id iterations exploration-weight

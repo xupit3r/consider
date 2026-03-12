@@ -19,6 +19,13 @@
   "Protocol for scoring a candidate step or path (Process Reward)."
   (score-step [this context candidate-action] "Returns a pragmatic and epistemic estimate."))
 
+(defprotocol KnowledgeExtractor
+  "Protocol for extracting structured knowledge from text via LLM."
+  (extract-knowledge [this text entities]
+    "Extract entities and triples from text given existing entities. Returns {:entities [...] :triples [...]}")
+  (formulate-query [this gaps goals]
+    "Generate a search query from knowledge gaps and goals. Returns a query string."))
+
 ;; --- Prompt Templates ---
 
 (defn- format-context
@@ -78,7 +85,14 @@ Return ONLY a JSON object with these keys."))
         (map? resp) resp
         :else {:pragmatic-estimate 0.5
                :epistemic-estimate 0.5
-               :confidence 1.0}))))
+               :confidence 1.0})))
+  
+  KnowledgeExtractor
+  (extract-knowledge [this text entities]
+    {:entities [{:entity-name "Mock Entity" :entity-type "Concept"}]
+     :triples [{:subject "Mock Entity" :predicate "is-a" :object "Mock"}]})
+  (formulate-query [this gaps goals]
+    "mock search query"))
 
 (defn make-mock-llm
   "Creates a mock LLM with predefined responses."

@@ -100,6 +100,39 @@
   (update belief-state :internal-states merge
           (into {} (map (fn [s] [(:entity-id s) s]) new-slots))))
 
+(defn merge-slots
+  "Merges multiple slots into a target slot.
+   Performs precision-weighted averaging of positions and variances."
+  [belief-state target-id source-ids]
+  (let [internal-states (:internal-states belief-state)
+        target-slot (get internal-states target-id)
+        source-slots (filter identity (map #(get internal-states %) source-ids))
+        all-slots (conj source-slots target-slot)]
+    (if (or (nil? target-slot) (empty? source-slots))
+      belief-state
+      (let [positions (map :position all-slots)
+            variances (map :variance all-slots)
+            dim (count (:position target-slot))
+
+            ;; Precision-weighted average: pos = sum(pos_i / var_i) / sum(1 / var_i)
+            ;; new_var = 1 / sum(1 / var_i)
+            new-pos-and-var
+            (mapv (fn [d]
+                    (let [precisions (map #(/ 1.0 (max 1e-6 (nth % d))) variances)
+                          sum-prec (reduce + precisions)
+                          sum-weighted-pos (reduce + (map * (map #(nth % d) positions) precisions))]
+                      [(/ sum-weighted-pos sum-prec) (/ 1.0 sum-prec)]))
+                  (range dim))
+
+            new-pos (mapv first new-pos-and-var)
+            new-var (mapv second new-pos-and-var)
+
+            updated-slot (assoc target-slot :position new-pos :variance new-var)
+
+            new-states (-> (apply dissoc internal-states source-ids)
+                           (assoc target-id updated-slot))]
+        (assoc belief-state :internal-states new-states)))))
+
 (defn dream-trajectory
   "Generates a simulated sequence of hidden states and observations (a dream).
    Uses the learned transition dynamics and current belief state as a seed."
@@ -157,6 +190,57 @@
   "Removes a slot from the internal states."
   [belief-state id]
   (update belief-state :internal-states dissoc id))
+
+;; --- Knowledge Foraging Support ---
+
+(defn make-knowledge-slot
+  "Creates a slot representing a knowledge domain cluster.
+   Position = domain embedding (from graph structure).
+   Variance = epistemic uncertainty (starts high, decreases as knowledge grows)."
+  [domain-id embedding uncertainty]
+  (make-slot domain-id embedding uncertainty))
+
+(defn knowledge-likelihood-fn
+  "Creates a likelihood function for knowledge foraging.
+   Predicts expected observations given knowledge state.
+   Observation vector: [n-new-entities, n-confirmed, n-contradictions, n-new-relations, topic-sim, quality]"
+  [knowledge-graph]
+  (fn [internal-states]
+    (let [slots (vals internal-states)
+          ;; Average position across slots gives expected knowledge state
+          avg-pos (if (empty? slots)
+                    [0.0 0.0 0.0 0.0 0.5 0.5]
+                    (let [positions (map :position slots)
+                          n (count positions)]
+                      (mapv (fn [i]
+                              (/ (reduce + (map #(nth % i 0.0) positions)) n))
+                            (range 6))))]
+      ;; Expected observation: moderate new entities, some confirmations
+      [(max 0.0 (- 5.0 (nth avg-pos 0 0.0))) ;; fewer new entities as knowledge grows
+       (min 10.0 (nth avg-pos 0 0.0)) ;; more confirmations
+       0.0 ;; contradictions expected = 0
+       (max 0.0 (- 10.0 (nth avg-pos 1 0.0))) ;; fewer new relations
+       (nth avg-pos 4 0.5) ;; topic similarity stays
+       0.6]))) ;; expected page quality
+
+(defn knowledge-transition-fn
+  "Creates a transition function for knowledge foraging.
+   Models how visiting a URL changes the knowledge state."
+  []
+  (fn [internal-states action]
+    ;; Knowledge accumulates: positions shift toward observed values
+    (reduce-kv (fn [acc id slot]
+                 (let [pos (:position slot)
+                       var (:variance slot)
+                       ;; Visiting a URL slightly reduces variance (uncertainty)
+                       new-var (mapv #(max 0.01 (* % 0.95)) var)
+                       ;; Position shifts slightly toward center (mean-reversion)
+                       ;; Target center for knowledge foraging could be [0 0 0 0 1 1] (ideal similarity/quality)
+                       center [0.0 0.0 0.0 0.0 0.5 0.5]
+                       new-pos (mapv (fn [i] (+ (nth pos i) (* 0.01 (- (nth center i) (nth pos i))))) (range 6))]
+                   (assoc acc id (assoc slot :position new-pos :variance new-var))))
+               {}
+               internal-states)))
 
 (defn validate-belief-state
   "Validates the belief state against its specification."
