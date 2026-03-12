@@ -56,10 +56,12 @@
    Format: 'DO(target-id, [val1, val2])'"
   [action-str]
   (try
-    (if-let [match (re-find #"DO\((:[^,]+),\s*\[([^\]]+)\]\)" action-str)]
-      (let [target (keyword (subs (second match) 1)) ;; Remove leading :
-            values (mapv #(Double/parseDouble %) (clojure.string/split (last match) #",\s*"))]
-        {:type :do :target target :value values})
+    (if (string? action-str)
+      (if-let [match (re-find #"DO\((:[^,]+),\s*\[([^\]]+)\]\)" action-str)]
+        (let [target (keyword (subs (second match) 1)) ;; Remove leading :
+              values (mapv #(Double/parseDouble %) (clojure.string/split (last match) #",\s*"))]
+          {:type :do :target target :value values :label action-str})
+        action-str)
       action-str)
     (catch Exception _ action-str)))
 
@@ -72,8 +74,6 @@
         new-nodes (map-indexed 
                    (fn [idx candidate]
                      (let [new-id (str node-id "-" idx)
-                           ;; LLM can suggest action strings or structured interventions
-                           ;; e.g. {:type :do :target :e1 :value [1.0] :label "POKE_E1"}
                            action-data (:candidate-action candidate)
                            action-val (if (string? action-data)
                                         (parse-interventional-action action-data)
@@ -82,7 +82,7 @@
                            risk (- 1.0 (or (:pragmatic-estimate candidate) 0.5))
                            ambiguity (or (:epistemic-estimate candidate) 0.5)
                            
-                           ;; NEW: Immediate Causal Boost
+                           ;; Immediate Causal Boost
                            precision (get (meta orchestrator-state) :precision-matrix)
                            slot-ids (get (meta orchestrator-state) :slot-ids)
                            target-id (when (map? action-val) (:target action-val))
@@ -102,6 +102,7 @@
                    candidates)]
     (update-in orchestrator-state [:forest tree-id]
                (fn [t] (reduce (fn [acc node] (assoc acc (:node-id node) node)) t new-nodes)))))
+
 (defn select-best-node
   "Selects the next node to expand using UCT modified for EFE (minimizing value)."
   [tree node-id exploration-weight]
@@ -141,11 +142,8 @@
   "Prunes branches from the tree that have an Expected Free Energy (value) above the threshold."
   [orchestrator-state tree-id threshold]
   (let [tree (get-in orchestrator-state [:forest tree-id])
-        ;; Find all nodes with value > threshold (we want to MINIMIZE value/EFE)
         nodes-to-prune (filter (fn [[id node]] (> (:value node) threshold)) tree)
         ids-to-prune (set (map first nodes-to-prune))
-
-        ;; Function to find all descendants
         get-descendants (fn [t root-id]
                           (loop [queue [root-id]
                                  descendants #{}]
@@ -155,7 +153,6 @@
                                     children (map :node-id (filter #(= (:parent-id %) curr) (vals t)))]
                                 (recur (into (vec (rest queue)) children)
                                        (into descendants children))))))
-
         all-pruned-ids (reduce (fn [acc id] (into acc (get-descendants tree id))) ids-to-prune ids-to-prune)
         new-tree (apply dissoc tree (into all-pruned-ids ids-to-prune))]
     (assoc-in orchestrator-state [:forest tree-id] new-tree)))
@@ -164,22 +161,18 @@
   "Extracts the sequence of actions for the branch with the lowest Expected Free Energy."
   [orchestrator-state tree-id]
   (let [tree (get-in orchestrator-state [:forest tree-id])
-        ;; Find leaf nodes (nodes with no children)
-        all-ids (set (keys tree))
         parent-ids (set (map :parent-id (vals tree)))
         leaf-nodes (filter #(not (contains? parent-ids (:node-id %))) (vals tree))
-
         best-leaf (if (empty? leaf-nodes)
                     (get tree "root")
                     (apply min-key :value leaf-nodes))]
-        (loop [curr-node best-leaf
+    (loop [curr-node best-leaf
            actions []]
-        (if (= "root" (:node-id curr-node))
+      (if (or (nil? curr-node) (= "root" (:node-id curr-node)))
         (reverse actions)
         (recur (get tree (:parent-id curr-node))
                (conj actions (let [act (:action curr-node)]
                                (if (map? act) (:label act act) act))))))))
-
 
 (defn add-tree
   "Adds a new reasoning tree to the forest."
@@ -192,9 +185,7 @@
     (assoc-in orchestrator-state [:forest tree-id] {"root" root-node})))
 
 (defn reason
-  "Performs a specified number of reasoning iterations using MCTS with sparse pruning.
-   Uses the generative model (if provided) to refine the Expected Free Energy (G) calculation.
-   Supports interventional actions (do-calculus)."
+  "Performs reasoning using MCTS."
   [orchestrator-state predictor scorer tree-id iterations exploration-weight
    & {:keys [prune-threshold likelihood-fn transition-fn]}]
   (loop [state orchestrator-state
@@ -202,41 +193,36 @@
     (if (zero? i)
       state
       (let [tree (get-in state [:forest tree-id])
-            ;; 1. Selection
             leaf-id (select-best-node tree "root" exploration-weight)
             leaf (get tree leaf-id)
-            ;; 2. Expansion (via LLM predictor)
+            
             candidates (llm/predict-candidates predictor (:state leaf))
             state-after-expansion (expand-node state tree-id leaf-id candidates)
-            ;; 3. Evaluation (Refined Expected Free Energy)
+            
             avg-heuristic-value (let [avg-pragmatic (/ (reduce + (map :pragmatic-estimate candidates)) (max 1 (count candidates)))
                                       avg-epistemic (/ (reduce + (map :epistemic-estimate candidates)) (max 1 (count candidates)))
-                                      ;; G = Risk - InformationGain. Risk = 1.0 - Utility
                                       llm-g (- (- 1.0 avg-pragmatic) avg-epistemic)
-
-                                      ;; Model's rigorous G (if world model functions are available)
                                       model-g (if (and likelihood-fn transition-fn)
                                                 (let [meta-bs (:belief-state (meta state))
                                                       action-str (or (:action leaf) "STAY")
-                                                      ;; NEW: Support interventional parsing
                                                       action (parse-interventional-action action-str)
-
                                                       pred-states (transition-fn (:internal-states meta-bs) action)
                                                       pred-bs (assoc meta-bs :internal-states pred-states)
                                                       efe-res (try
                                                                 (when (and likelihood-fn (fn? likelihood-fn))
-                                                                  (inf/variational-free-energy pred-bs [] likelihood-fn))
+                                                                  (inf/expected-free-energy pred-bs likelihood-fn))
                                                                 (catch Exception _ nil))]
                                                   (if efe-res
-                                                    (- (:vfe efe-res) avg-epistemic)
+                                                    (- (:g efe-res) avg-epistemic)
                                                     llm-g))
-                                                llm-g)]
-                                  ;; Final G estimate: Model G adjusted by causal uncertainty reduction
-                                  model-g)
-            ;; 4. Backpropagation
-            current-tree (get-in state-after-expansion [:forest tree-id])
+                                                llm-g)
+                                      precision (get (meta state) :precision-matrix)
+                                      slot-ids (get (meta state) :slot-ids)
+                                      target-id (when (map? (:action leaf)) (:target (:action leaf)))
+                                      causal-boost (calculate-causal-ambiguity precision slot-ids target-id)]
+                                  (- model-g (* 100.0 causal-boost)))
             
-            ;; Apply causal boost to the specific candidates that were just added
+            current-tree (get-in state-after-expansion [:forest tree-id])
             updated-tree (try 
                            (reduce
                             (fn [t node-id]
@@ -245,7 +231,6 @@
                                     slot-ids (get (meta state) :slot-ids)
                                     target-id (when (map? (:action node)) (:target (:action node)))
                                     boost (calculate-causal-ambiguity precision slot-ids target-id)
-                                    ;; Extremely aggressive boost for the test
                                     new-val (if (> boost 5.0) -1000.0 (:value node))]
                                 (assoc t node-id (assoc node :value new-val))))
                             current-tree
@@ -254,8 +239,6 @@
             
             final-tree (update-node-value updated-tree leaf-id avg-heuristic-value)
             state-with-updated-tree (assoc-in state-after-expansion [:forest tree-id] final-tree)
-
-            ;; 5. Sparse Activation (Optional Pruning)
             final-state (if prune-threshold
                           (prune-branches state-with-updated-tree tree-id prune-threshold)
                           state-with-updated-tree)]

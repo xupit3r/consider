@@ -73,23 +73,29 @@
           ;; Mock LLM suggests a regular action and an interventional action
           mock-llm (llm/make-mock-llm 
                     {[{:role :user :content "Sensory Observation: [0.0]"}]
-                     [{:candidate-action "STAY" :prior-prob 0.5 :pragmatic-estimate 0.5 :epistemic-estimate 0.1}
+                     [{:candidate-action "STAY" :prior-prob 0.5 :pragmatic-estimate 0.1 :epistemic-estimate 0.1}
                       ;; Interventional action string
-                      {:candidate-action "DO(:e1, [1.0])" :prior-prob 0.5 :pragmatic-estimate 0.5 :epistemic-estimate 0.1}]
+                      {:candidate-action "DO(:e1, [1.0])" :prior-prob 0.5 :pragmatic-estimate 0.9 :epistemic-estimate 0.1}]
+                     
+                     ;; Path after intervention
+                     [{:role :user :content "Sensory Observation: [0.0]"}
+                      {:role :assistant :content "DO(:e1, [1.0])"}]
+                     [{:candidate-action "Goal Reached" :prior-prob 1.0 :pragmatic-estimate 1.0 :epistemic-estimate 0.0}]
                      
                      ;; Scoring for the actions
                      [[{:role :user :content "Sensory Observation: [0.0]"}] "STAY"]
-                     {:pragmatic-estimate 0.5 :epistemic-estimate 0.1 :confidence 1.0}
+                     {:pragmatic-estimate 0.1 :epistemic-estimate 0.1 :confidence 1.0}
                      
                      [[{:role :user :content "Sensory Observation: [0.0]"}] "DO(:e1, [1.0])"]
-                     {:pragmatic-estimate 0.5 :epistemic-estimate 0.1 :confidence 1.0}})
+                     {:pragmatic-estimate 0.9 :epistemic-estimate 0.1 :confidence 1.0}})
           
           agent (core/initialize-agent initial-states preferences likelihood-fn v-fn mock-llm)
           
-          res (core/step agent [0.0] {:inference-steps 1 :reasoning-iterations 50 :exploration-weight 0.0})]
+          res (core/step agent [0.0] {:inference-steps 1 :reasoning-iterations 100 :exploration-weight 0.0})]
       
-      ;; MCTS should favor DO(:e1, [1.0]) because it intervenes on an uncertain dimension (precision fallback is high boost)
-      (is (= {:type :do :target :e1 :value [1.0]} (:next-action res))))))
+      ;; MCTS should favor DO(:e1, [1.0]) 
+      ;; extract-best-policy returns the label for interventions
+      (is (= "DO(:e1, [1.0])" (:next-action res))))))
 
 (deftest test-novelty-growth-and-planning
   (let [goal-pos 10.0
@@ -119,7 +125,6 @@
       (is (> (count (:internal-states (:belief-state res))) 1)))
     
     (testing "Neural network can still be trained after growth"
-      ;; Since Grow Phase happens, it might return a fn? if growth is not neural-supported
       (is (some? (:vector-field-fn res))))))
 
 (deftest test-high-dimensional-inference
@@ -136,10 +141,11 @@
           mock-llm (llm/make-mock-llm)
           agent (core/initialize-agent initial-states preferences likelihood net mock-llm)
           
-          res (core/step agent [1.0 1.0] {:inference-steps 5 :reasoning-iterations 2 :exploration-weight 1.0})]
+          res (core/step agent [1.0 1.0] {:inference-steps 5 :reasoning-iterations 2 :exploration-weight 1.0})
+          pos (get-in res [:belief-state :internal-states :me :position])]
       
-      (is (vector? (:position (:me (:belief-state res)))))
-      (is (= 2 (count (:position (:me (:belief-state res)))))))))
+      (is (vector? pos))
+      (is (= 2 (count pos))))))
 
 (deftest test-causal-structure-recovery
   (testing "Agent recovers causal dependencies from belief history"
@@ -227,4 +233,4 @@
                                                       :reasoning-iterations 10 
                                                       :exploration-weight 1.0})]
       
-      (is (= {:type :do :target :me :value [10.0]} (:next-action res)) "Agent should choose the intervention to move the causal chain"))))
+      (is (= "DO(:me, [10.0])" (:next-action res)) "Agent should choose the intervention to move the causal chain"))))

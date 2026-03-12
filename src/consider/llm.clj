@@ -66,8 +66,8 @@ Return ONLY a JSON object with these keys."))
         (vector? resp) resp
         :else [{:candidate-action "Standard Reasoning Step"
                 :prior-prob 1.0
-                :pragmatic-estimate 0.5
-                :epistemic-estimate 0.5
+                :pragmatic-estimate 0.7
+                :epistemic-estimate 0.1
                 :confidence 1.0}])))
 
   ProcessScorer

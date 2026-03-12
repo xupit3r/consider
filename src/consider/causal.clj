@@ -101,9 +101,9 @@
       (if (>= k max-iter)
         (let [score (acyclicity-score S)]
           (if (> score 1.0)
-            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta
+            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-matrix theta
              :iterations k :acyclicity 0.0 :warning "Diverged to cyclic structure"}
-            {:sparse-S S :low-rank-L L :precision-theta theta :iterations k :acyclicity score}))
+            {:sparse-S S :low-rank-L L :precision-matrix theta :iterations k :acyclicity score}))
         (let [grad (acyclicity-gradient S)
               temp-S (n/copy theta)
               _ (n/axpy! 1.0 L temp-S)
@@ -122,9 +122,9 @@
           (if (or (< err tol) (Double/isNaN err) (> (r/nrm2 new-S) 1e6))
             (let [score (acyclicity-score new-S)]
               (if (> score 1.0)
-                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta
+                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-matrix theta
                  :iterations k :acyclicity 0.0 :warning "Early termination due to divergence"}
-                {:sparse-S new-S :low-rank-L new-L :precision-theta theta :iterations k :error err :acyclicity score}))
+                {:sparse-S new-S :low-rank-L new-L :precision-matrix theta :iterations k :error err :acyclicity score}))
             (recur (inc k) new-S new-L new-U)))))))
 
 (defn learn-structure

@@ -142,9 +142,12 @@
         predicted-obs (native/dv obs-dim)
         actual-obs-v (native/dv obs-dim)
         obs-var (native/dv obs-dim)
+        actual-obs-count (count actual-obs)
         _ (dotimes [i obs-dim]
             (n/entry! predicted-obs i (double (nth predicted-obs-data i)))
-            (n/entry! actual-obs-v i (double (nth actual-obs i)))
+            (n/entry! actual-obs-v i (if (< i actual-obs-count)
+                                       (double (nth actual-obs i))
+                                       (double (nth predicted-obs-data i))))
             (n/entry! obs-var i 0.1))
 
         accuracy (calculate-accuracy predicted-obs actual-obs-v obs-var)
