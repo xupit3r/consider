@@ -41,6 +41,19 @@ The agent operates through an iterative cycle (Perceive -> Infer -> Learn -> Dec
 - **Performance**: Leverage Neanderthal and Deep Diamond for all tensor and matrix operations.
 - **Testing**: Every new feature or bug fix must be accompanied by a test in the `test/` directory. Use mock LLMs for testing reasoning logic.
 
+## Example Use Cases
+
+A set of illustrative use cases showing the agent in action can be found in [docs/EXAMPLES.md](docs/EXAMPLES.md). These include:
+- **Smart Thermostat**: Preference matching for climate control.
+- **Novelty Discovery**: Dynamic generative model expansion.
+- **Social Assistant**: LLM-guided state scoring for interaction.
+- **Curious Explorer**: Information-seeking (Epistemic Value) under uncertainty.
+
+To run the executable examples:
+```bash
+clojure -M:test -n consider.examples-test
+```
+
 ## Specialized Skills
 
 The project includes several specialized Gemini skills located in the `agents/` directory:

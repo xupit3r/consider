@@ -4,7 +4,31 @@
       "command": "clojure",
       "args": [
         "-Tmcp",
-        "start"
+        "start",
+        ":config-profile",
+        "default"
+      ]
+    },
+    "fetch": {
+      "command": "/home/joe/.local/bin/uvx",
+      "args": [
+        "mcp-server-fetch"
+      ]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/joe/code/consider"
+      ]
+    },
+    "git": {
+      "command": "/home/joe/.local/bin/uvx",
+      "args": [
+        "mcp-server-git",
+        "--repository",
+        "/home/joe/code/consider"
       ]
     }
   },

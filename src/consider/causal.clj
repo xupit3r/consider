@@ -101,7 +101,7 @@
       (if (>= k max-iter)
         (let [score (acyclicity-score S)]
           (if (> score 1.0)
-            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta 
+            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta
              :iterations k :acyclicity 0.0 :warning "Diverged to cyclic structure"}
             {:sparse-S S :low-rank-L L :precision-theta theta :iterations k :acyclicity score}))
         (let [grad (acyclicity-gradient S)
@@ -122,12 +122,19 @@
           (if (or (< err tol) (Double/isNaN err) (> (r/nrm2 new-S) 1e6))
             (let [score (acyclicity-score new-S)]
               (if (> score 1.0)
-                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta 
+                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-theta theta
                  :iterations k :acyclicity 0.0 :warning "Early termination due to divergence"}
                 {:sparse-S new-S :low-rank-L new-L :precision-theta theta :iterations k :error err :acyclicity score}))
             (recur (inc k) new-S new-L new-U)))))))
 
 (defn learn-structure
-  "Learns the causal structure from a precision matrix."
+  "Learns the causal structure from a precision matrix.
+   Normalizes the precision matrix to ensure stable ADMM convergence."
   [precision-matrix]
-  (alvgl-decomposition precision-matrix 0.1 0.1))
+  (let [d (n/mrows precision-matrix)
+        norm-val (r/nrm2 precision-matrix)]
+    (if (or (zero? norm-val) (Double/isNaN norm-val))
+      (alvgl-decomposition precision-matrix 0.1 0.1)
+      (let [normalized-theta (n/copy precision-matrix)]
+        (n/scal! (/ 1.0 norm-val) normalized-theta)
+        (alvgl-decomposition normalized-theta 0.1 0.1 :rho 50.0)))))
