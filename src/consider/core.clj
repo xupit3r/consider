@@ -92,13 +92,14 @@
                                            (not (empty? novel-slots)))
                                     (let [all-slots (:internal-states belief-after-growth)
                                           total-state-dim (reduce + (map #(count (:position %)) (vals all-slots)))
-                                          total-obs-dim (count sensory-data)]
+                                          total-obs-dim (count (if (seqable? sensory-data) sensory-data [sensory-data]))]
                                       (models/grow-network vector-field-fn total-state-dim total-obs-dim))
                                     vector-field-fn)
         
         ;; 2. PERCEIVE & INFER: Update beliefs based on sensory data (Minimize VFE)
         ;; Now using the correctly-dimensioned belief and vector field
-        updated-belief (inf/belief-update belief-after-growth sensory-data likelihood-fn vector-field-after-growth inference-steps)
+        sensory-v (if (vector? sensory-data) sensory-data [sensory-data])
+        updated-belief (inf/belief-update belief-after-growth sensory-v likelihood-fn vector-field-after-growth inference-steps)
         
         ;; 3. LEARN: Discover causal structure from updated beliefs
         precision-matrix (estimate-precision-matrix updated-belief)
@@ -106,10 +107,14 @@
         belief-with-learning (wm/update-transition-dynamics updated-belief (:sparse-S causal-structure))
         
         ;; 4. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
-        initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-data)})
+        initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-v)})
         updated-orchestrator (-> orchestrator-state
                                  (exec/add-tree :current initial-trajectory)
-                                 (with-meta {:belief-state belief-with-learning
+                                 (with-meta {:belief-state (if (:likelihood-mapping belief-with-learning)
+                                                             belief-with-learning
+                                                             (wm/with-generative-model belief-with-learning likelihood-fn (fn [s a] s)))
+                                             :precision-matrix (:precision-matrix causal-structure)
+                                             :slot-ids (sort (keys (:internal-states belief-with-learning)))
                                              :causal-ambiguity-fn 
                                              (fn [trajectory]
                                                (let [acyclicity (:acyclicity causal-structure)
