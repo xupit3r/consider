@@ -19,7 +19,7 @@ The agent operates through an iterative cycle (Perceive -> Infer -> Learn -> Dec
 - `consider.inference`: Performs belief updates by minimizing Variational Free Energy (VFE). Includes training of recognition models.
 - `consider.causal`: Implements causal structure discovery (DAG learning) from belief trajectories.
 - `consider.executive`: Handles policy selection and MCTS reasoning by minimizing Expected Free Energy (EFE).
-- `consider.llm`: Integrates Large Language Models (LLMs) to serve as predictors and scorers for reasoning trees.
+- `consider.llm`: Integrates LLMs (Mock and Ollama supported) to serve as predictors and scorers for reasoning trees.
 - `consider.specs.*`: Formal data structure specifications using `clojure.spec.alpha`.
 
 ## Building and Running
@@ -27,6 +27,7 @@ The agent operates through an iterative cycle (Perceive -> Infer -> Learn -> Dec
 ### Prerequisites
 - [Clojure CLI](https://clojure.org/guides/install_clojure)
 - Native BLAS/LAPACK libraries (e.g., Intel MKL or OpenBLAS) for Neanderthal.
+- [Ollama](https://ollama.ai/) (for real LLM support, recommended model: `llama3`)
 
 ### Key Commands
 - **Run Tests**: `clojure -M:test` (Uses `cognitect.test-runner`)

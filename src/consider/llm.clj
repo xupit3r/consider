@@ -1,5 +1,9 @@
 (ns consider.llm
-  "Implementation of the LLM Abstraction Layer (System 1)."
+  "Implementation of the LLM Abstraction Layer (System 1).
+   Supports multiple providers:
+   1. MockLLM (for deterministic testing)
+   2. Ollama (for local inference, see consider.llm.ollama)
+   3. DynamicLLM (generic wrapper for arbitrary completion functions)"
   (:require [clojure.spec.alpha :as s]
             [consider.specs.llm :as llm-spec]
             [clojure.string :as str]
