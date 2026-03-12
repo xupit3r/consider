@@ -115,3 +115,33 @@
       (println "Final Avg VFE:" final-vfe)
       ;; VFE should decrease because accuracy increases when samples are closer to target-pos
       (is (< final-vfe initial-vfe)))))
+
+(deftest test-dreaming-consolidation
+  (let [state-dim 1
+        obs-dim 1
+        hidden-dim 16
+        net (models/make-mlp-vector-field state-dim obs-dim hidden-dim)
+        
+        target-pos 10.0
+        likelihood-fn (fn [states] [(first (:position (get states :e1)))])
+        
+        ;; A world model where :e1 stays at target-pos
+        transition-fn (fn [states action] {:e1 (wm/make-slot :e1 [target-pos])})
+        
+        initial-bs (-> (wm/make-belief-state {} [])
+                       (wm/update-slot :e1 [0.0] [1.0])
+                       (wm/with-generative-model likelihood-fn transition-fn))
+        
+        ;; Initial VFE for an observation at target-pos
+        initial-vfe (:variational-free-energy (belief-update initial-bs [target-pos] likelihood-fn net 10))
+        
+        ;; Perform Sleep with NO history, only DREAMING
+        ;; Dreaming will use transition-fn to see target-pos
+        trained-net (train-recognition-model net initial-bs 100)
+        
+        final-vfe (:variational-free-energy (belief-update initial-bs [target-pos] likelihood-fn trained-net 10))]
+    
+    (testing "Dreaming alone can improve recognition models"
+      (println "Dreaming - Initial VFE:" initial-vfe)
+      (println "Dreaming - Final VFE:" final-vfe)
+      (is (< final-vfe initial-vfe)))))

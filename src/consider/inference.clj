@@ -282,45 +282,46 @@
     (let [history (:history belief-state)
           n-history (count history)
           batch-size 16]
-      (if (zero? n-history)
-        vector-field-fn
-        (let [state-dim (n/mrows (:w2 vector-field-fn))
-              obs-dim (- (n/ncols (:w1 vector-field-fn)) state-dim 1)]
-          (dotimes [_ iterations]
-            (let [samples (repeatedly
-                           batch-size
-                           (fn []
-                             (if (or (< (rand) 0.5) (< n-history 2))
-                               (let [item (sample-prioritized-history history)
-                                     sorted-slots (sort-by key (:internal-states item))
-                                     x1-data (mapcat #(:position (second %)) sorted-slots)
-                                     x1 (native/dv state-dim)
-                                     _ (dotimes [i (min state-dim (count x1-data))]
-                                         (n/entry! x1 i (double (nth x1-data i))))
-                                     obs-v (native/dv obs-dim)
-                                     actual-obs (:observation item)
-                                     _ (dotimes [i (min obs-dim (count actual-obs))]
-                                         (n/entry! obs-v i (double (nth actual-obs i))))]
-                                 (generate-training-sample x1 obs-v state-dim obs-dim))
-                               (let [item (last history)
-                                     sorted-slots (sort-by key (:internal-states item))
-                                     x1-data (mapcat #(:position (second %)) sorted-slots)
-                                     x1 (native/dv state-dim)
-                                     _ (dotimes [i (min state-dim (count x1-data))]
-                                         (n/entry! x1 i (double (nth x1-data i))))
-                                     obs-data ((:likelihood-mapping belief-state) (:internal-states item))
-                                     obs-v (native/dv obs-dim)
-                                     _ (dotimes [i (min obs-dim (count obs-data))]
-                                         (n/entry! obs-v i (double (nth obs-data i))))]
-                                 (generate-training-sample x1 obs-v state-dim obs-dim)))))
+      (let [state-dim (n/mrows (:w2 vector-field-fn))
+            obs-dim (- (n/ncols (:w1 vector-field-fn)) state-dim 1)]
+        (dotimes [_ iterations]
+          (let [samples (repeatedly
+                         batch-size
+                         (fn []
+                           (if (and (> n-history 0) (< (rand) 0.5))
+                             ;; 1. Real History (Prioritized)
+                             (let [item (sample-prioritized-history history)
+                                   sorted-slots (sort-by key (:internal-states item))
+                                   x1-data (mapcat #(:position (second %)) sorted-slots)
+                                   x1 (native/dv state-dim)
+                                   _ (dotimes [i (min state-dim (count x1-data))]
+                                       (n/entry! x1 i (double (nth x1-data i))))
+                                   obs-v (native/dv obs-dim)
+                                   actual-obs (:observation item)
+                                   _ (dotimes [i (min obs-dim (count actual-obs))]
+                                       (n/entry! obs-v i (double (nth actual-obs i))))]
+                               (generate-training-sample x1 obs-v state-dim obs-dim))
+                             ;; 2. Generative Replay (Dreaming)
+                             (let [dream (wm/dream-trajectory belief-state 1)
+                                   item (first dream)
+                                   sorted-slots (sort-by key (:internal-states item))
+                                   x1-data (mapcat #(:position (second %)) sorted-slots)
+                                   x1 (native/dv state-dim)
+                                   _ (dotimes [i (min state-dim (count x1-data))]
+                                       (n/entry! x1 i (double (nth x1-data i))))
+                                   obs-data (:observation item)
+                                   obs-v (native/dv obs-dim)
+                                   _ (dotimes [i (min obs-dim (count obs-data))]
+                                       (n/entry! obs-v i (double (nth obs-data i))))]
+                               (generate-training-sample x1 obs-v state-dim obs-dim)))))
 
-                  input-mat (native/dge batch-size (+ state-dim 1 obs-dim))
-                  target-mat (native/dge batch-size state-dim)]
+                input-mat (native/dge batch-size (+ state-dim 1 obs-dim))
+                target-mat (native/dge batch-size state-dim)]
 
-              (dotimes [i batch-size]
-                (let [[in-v out-v] (nth samples i)]
-                  (n/copy! in-v (n/row input-mat i))
-                  (n/copy! out-v (n/row target-mat i))))
+            (dotimes [i batch-size]
+              (let [[in-v out-v] (nth samples i)]
+                (n/copy! in-v (n/row input-mat i))
+                (n/copy! out-v (n/row target-mat i))))
 
-              (models/train-batch! vector-field-fn input-mat target-mat 0.01 1)))
-          vector-field-fn)))))
+            (models/train-batch! vector-field-fn input-mat target-mat 0.01 1)))
+        vector-field-fn))))

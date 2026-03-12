@@ -100,15 +100,27 @@
   (update belief-state :internal-states merge
           (into {} (map (fn [s] [(:entity-id s) s]) new-slots))))
 
-(defn merge-slots
-  "Merges multiple slots into a single slot (e.g., if they represent the same entity)."
-  [belief-state target-id source-ids]
-  (let [internal-states (:internal-states belief-state)
-        target-slot (get internal-states target-id)
-        ;; Simplified merge: just keep the target but remove the sources.
-        ;; In a real implementation, we would average the means and combine variances.
-        new-states (apply dissoc internal-states source-ids)]
-    (assoc belief-state :internal-states new-states)))
+(defn dream-trajectory
+  "Generates a simulated sequence of hidden states and observations (a dream).
+   Uses the learned transition dynamics and current belief state as a seed."
+  [belief-state steps]
+  (let [transition-fn (:transition-dynamics belief-state)
+        likelihood-fn (:likelihood-mapping belief-state)
+        initial-states (:internal-states belief-state)]
+    (loop [curr-states initial-states
+           i 0
+           acc []]
+      (if (>= i steps)
+        acc
+        (let [;; In a dream, the agent explores potential actions (random or goal-directed)
+              random-action (if (< (rand) 0.2) "DREAM_ACTION" "STAY")
+              next-states (transition-fn curr-states random-action)
+              observation (likelihood-fn next-states)
+              entry {:internal-states next-states
+                     :observation observation
+                     ;; Dreams are highly uncertain, we can give them a 'surprise' value
+                     :vfe 0.5}]
+          (recur next-states (inc i) (conj acc entry)))))))
 
 (defn identify-novel-entities
   "Identifies potential new hidden states (slots) based on residual prediction errors
