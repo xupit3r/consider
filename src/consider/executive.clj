@@ -71,35 +71,37 @@
   [orchestrator-state tree-id node-id candidates]
   (let [tree (get-in orchestrator-state [:forest tree-id])
         parent-node (get tree node-id)
-        new-nodes (map-indexed 
+        ;; Ensure candidates is a collection
+        safe-candidates (if (coll? candidates) (filter map? candidates) [])
+        new-nodes (map-indexed
                    (fn [idx candidate]
                      (let [new-id (str node-id "-" idx)
                            action-data (:candidate-action candidate)
                            action-val (if (string? action-data)
                                         (parse-interventional-action action-data)
-                                        action-data)
-                           
+                                        (or action-data "STAY"))
+
                            risk (- 1.0 (or (:pragmatic-estimate candidate) 0.5))
                            ambiguity (or (:epistemic-estimate candidate) 0.5)
-                           
+
                            ;; Immediate Causal Boost
                            precision (get (meta orchestrator-state) :precision-matrix)
                            slot-ids (get (meta orchestrator-state) :slot-ids)
                            target-id (when (map? action-val) (:target action-val))
                            boost (calculate-causal-ambiguity precision slot-ids target-id)
-                           
+
                            node (make-node {:node-id new-id
                                             :parent-id node-id
-                                            :state (conj (:state parent-node) 
-                                                         {:role :assistant 
+                                            :state (conj (:state parent-node)
+                                                         {:role :assistant
                                                           :content (if (map? action-val) (:label action-val) action-val)})
                                             :action action-val
-                                            :prior-prob (:prior-prob candidate)
+                                            :prior-prob (or (:prior-prob candidate) 0.1)
                                             :risk risk
                                             :ambiguity ambiguity})]
                        ;; Apply boost to value
                        (update node :value #(- % (* 100.0 boost)))))
-                   candidates)]
+                   safe-candidates)]
     (update-in orchestrator-state [:forest tree-id]
                (fn [t] (reduce (fn [acc node] (assoc acc (:node-id node) node)) t new-nodes)))))
 
@@ -234,12 +236,16 @@
       (let [tree (get-in state [:forest tree-id])
             leaf-id (select-best-node tree "root" exploration-weight)
             leaf (get tree leaf-id)
-            
+
             candidates (llm/predict-candidates predictor (:state leaf))
+            ;; Ensure candidates is a collection of maps for calculations below
+            safe-candidates (if (coll? candidates) (filter map? candidates) [])
+
             state-after-expansion (expand-node state tree-id leaf-id candidates)
-            
-            avg-heuristic-value (let [avg-pragmatic (/ (reduce + (map :pragmatic-estimate candidates)) (max 1 (count candidates)))
-                                      avg-epistemic (/ (reduce + (map :epistemic-estimate candidates)) (max 1 (count candidates)))
+
+            avg-heuristic-value (let [cnt (max 1 (count safe-candidates))
+                                      avg-pragmatic (/ (reduce + (map #(or (:pragmatic-estimate %) 0.5) safe-candidates)) cnt)
+                                      avg-epistemic (/ (reduce + (map #(or (:epistemic-estimate %) 0.1) safe-candidates)) cnt)
                                       llm-g (- (- 1.0 avg-pragmatic) avg-epistemic)
                                       model-g (if (and likelihood-fn transition-fn)
                                                 (let [meta-bs (:belief-state (meta state))
@@ -260,9 +266,9 @@
                                       target-id (when (map? (:action leaf)) (:target (:action leaf)))
                                       causal-boost (calculate-causal-ambiguity precision slot-ids target-id)]
                                   (- model-g (* 100.0 causal-boost)))
-            
+
             current-tree (get-in state-after-expansion [:forest tree-id])
-            updated-tree (try 
+            updated-tree (try
                            (reduce
                             (fn [t node-id]
                               (let [node (get t node-id)
@@ -275,7 +281,7 @@
                             current-tree
                             (map :node-id (filter #(= (:parent-id %) leaf-id) (vals current-tree))))
                            (catch Exception _ current-tree))
-            
+
             final-tree (update-node-value updated-tree leaf-id avg-heuristic-value)
             state-with-updated-tree (assoc-in state-after-expansion [:forest tree-id] final-tree)
             final-state (if prune-threshold

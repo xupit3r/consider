@@ -52,10 +52,16 @@
       (if (= i d) acc (recur (inc i) (+ acc (n/entry m i i)))))))
 
 (defn acyclicity-score
-  "Calculates the NOTEARS acyclicity score."
+  "Calculates the NOTEARS acyclicity score.
+   Clips entries to prevent matrix exponential overflow."
   [W]
   (let [d (n/mrows W)
-        W-sq (vm/sqr W)
+        W-safe (n/copy W)
+        _ (dotimes [i d]
+            (dotimes [j d]
+              (let [v (n/entry W i j)]
+                (n/entry! W-safe i j (max -1.0 (min 1.0 v))))))
+        W-sq (vm/sqr W-safe)
         I (native/dge d d)]
     (n/scal! 0.0 I)
     (dotimes [i d] (n/entry! I i i 1.0))
@@ -64,13 +70,20 @@
           exp-M (n/copy I)]
       (n/axpy! 1.0 M1 exp-M)
       (n/axpy! 0.5 M2 exp-M)
-      (- (matrix-trace exp-M) d))))
+      (let [score (- (matrix-trace exp-M) d)]
+        (if (Double/isNaN score) 100.0 score)))))
 
 (defn acyclicity-gradient
-  "Calculates the gradient of the NOTEARS acyclicity score."
+  "Calculates the gradient of the NOTEARS acyclicity score.
+   Clips inputs and outputs for numerical stability."
   [W]
   (let [d (n/mrows W)
-        W-sq (vm/sqr W)
+        W-safe (n/copy W)
+        _ (dotimes [i d]
+            (dotimes [j d]
+              (let [v (n/entry W i j)]
+                (n/entry! W-safe i j (max -1.0 (min 1.0 v))))))
+        W-sq (vm/sqr W-safe)
         I (native/dge d d)]
     (n/scal! 0.0 I)
     (dotimes [i d] (n/entry! I i i 1.0))
@@ -80,12 +93,13 @@
       (n/axpy! 1.0 M1 exp-M)
       (n/axpy! 0.5 M2 exp-M)
       (let [grad (n/trans exp-M)
-            two-W (n/copy W)]
+            two-W (n/copy W-safe)]
         (n/scal! 2.0 two-W)
         (vm/mul! grad two-W)
         (let [gnorm (r/nrm2 grad)]
-          (when (> gnorm 1.0) (n/scal! (/ 1.0 gnorm) grad)))
-        grad))))
+          (if (or (Double/isNaN gnorm) (> gnorm 10.0))
+            (n/scal! (/ 1.0 (or gnorm 1.0)) grad)
+            grad))))))
 
 (defn alvgl-decomposition
   "Performs Sparse-Low Rank decomposition of a precision matrix using ADMM with DAG constraints."
@@ -101,9 +115,9 @@
     (loop [k 0 S S L L U U]
       (if (>= k max-iter)
         (let [score (acyclicity-score S)]
-          (if (> score 1.0)
-            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-matrix theta
-             :iterations k :acyclicity 0.0 :warning "Diverged to cyclic structure"}
+          (if (or (Double/isNaN score) (> score 1.0))
+            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L (n/copy theta) :precision-matrix theta
+             :iterations k :acyclicity 0.0 :warning "Diverged to cyclic or NaN structure"}
             {:sparse-S S :low-rank-L L :precision-matrix theta :iterations k :acyclicity score}))
         (let [grad (acyclicity-gradient S)
               temp-S (n/copy theta)
@@ -119,12 +133,13 @@
               _ (n/axpy! 1.0 theta new-U)
               _ (n/axpy! -1.0 new-S new-U)
               _ (n/axpy! 1.0 new-L new-U)
-              err (r/nrm2 (n/axpy! -1.0 S (n/copy new-S)))]
-          (if (or (< err tol) (Double/isNaN err) (> (r/nrm2 new-S) 1e6))
+              diff (n/axpy! -1.0 S (n/copy new-S))
+              err (r/nrm2 diff)]
+          (if (or (< err tol) (Double/isNaN err) (> (r/nrm2 new-S) 1e4))
             (let [score (acyclicity-score new-S)]
-              (if (> score 1.0)
-                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L theta :precision-matrix theta
-                 :iterations k :acyclicity 0.0 :warning "Early termination due to divergence"}
+              (if (or (Double/isNaN score) (> score 1.0))
+                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L (n/copy theta) :precision-matrix theta
+                 :iterations k :acyclicity 0.0 :warning "Early termination due to divergence or NaN"}
                 {:sparse-S new-S :low-rank-L new-L :precision-matrix theta :iterations k :error err :acyclicity score}))
             (recur (inc k) new-S new-L new-U)))))))
 

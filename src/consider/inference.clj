@@ -72,7 +72,8 @@
     (* 0.5 (n/dot res ones))))
 
 (defn calculate-accuracy
-  "Calculates the expected log likelihood (Accuracy) of the sensory data using Neanderthal."
+  "Calculates the expected log likelihood (Accuracy) of the sensory data using Neanderthal.
+   Clips extreme values to prevent numerical instability."
   [predicted-obs actual-obs observation-variance]
   (let [d (n/dim predicted-obs)
         ones (native/dv d)
@@ -89,11 +90,15 @@
 
         res (n/copy t1)
         _ (n/axpy! 1.0 t2 res)]
+    ;; Clip individual log-likelihoods before summing
+    (dotimes [i d]
+      (n/entry! res i (max -1000.0 (min 1000.0 (n/entry res i)))))
     (* -0.5 (n/dot res ones))))
 
 (defn calculate-risk
   "Calculates the Risk (Pragmatic Value) as the KL divergence between predicted 
-   observations and agent preferences (C-matrix) using Neanderthal."
+   observations and agent preferences (C-matrix) using Neanderthal.
+   Clips extreme values for stability."
   [predicted-obs preferences observation-variance]
   (if (empty? preferences)
     0.0
@@ -112,7 +117,7 @@
           _ (vm/div! diff observation-variance)
           ones (native/dv d)
           _ (dotimes [i d] (n/entry! ones i 1.0))]
-      (* 0.5 (n/dot diff ones)))))
+      (max 0.0 (min 1000.0 (* 0.5 (n/dot diff ones)))))))
 
 (defn variational-free-energy
   "Calculates the Variational Free Energy (F) and Expected Free Energy (G) components."
@@ -206,7 +211,7 @@
             (n/entry! noise i (+ (n/entry noise i) (double (nth prev-pos-data i)))))
 
         updated-state-vec (flow-matching-sample vector-field-fn context noise steps)
-        
+
         ;; Ensure we handle dimension mismatch gracefully
         actual-total-dim (n/dim updated-state-vec)
 
