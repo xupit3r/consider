@@ -42,11 +42,11 @@ The agent operates through an iterative cycle: **Perceive -> Infer -> Learn -> D
 - Native BLAS/LAPACK libraries (e.g., Intel MKL or OpenBLAS).
 - [Ollama](https://ollama.ai/) (optional, for real LLM support).
 
-### Key Commands
+### Live Integration
 
-- **Run Tests**: `clojure -M:test`
-- **Start nREPL**: `clojure -M:test:nrepl` (Starts a server on port 7888 with test paths included).
-- **Interactive Development**: Use the nREPL server to evaluate code and inspect agent states in real-time.
+The project includes a live integration test for Ollama to verify real-world LLM performance:
+- **Run Live Test**: `clojure -M -i scripts/test_ollama_live.clj`
+- **Supported Models**: The script defaults to `qwen3:8b`. Ensure Ollama is running and the model is pulled.
 
 ## Project Organization
 
