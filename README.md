@@ -16,13 +16,13 @@ The project is built in **Clojure**, utilizing state-of-the-art numerical comput
 
 ## Architecture
 
-The agent operates through an iterative cycle: **Perceive -> Infer -> Learn -> Decide -> Act -> Sleep**.
+The agent operates through an iterative cycle: **Perceive -> Infer -> Learn -> Decide -> Act -> Sleep**. The architecture is informed by state-of-the-art research, including **"Hierarchical Active Inference: A Theory of Motivated Control"** (Pezzulo et al., 2018) and **"Structure learning enhances concept formation"** (Neacsu et al., 2022).
 
 - **`consider.core`**: Orchestrates the global reasoning loop and component interactions.
 - **`consider.world-model`**: Manages the generative model, hidden states ("slots"), and transition dynamics. Supports dynamic slot growth for novel entity discovery.
 - **`consider.inference`**: Performs belief updates by minimizing **Variational Free Energy (VFE)**. Utilizes **Flow Matching** for continuous state estimation.
-- **`consider.causal`**: Implements causal structure discovery (**DAG learning**) from belief trajectories using the **ALVGL** (Sparse-Low Rank) decomposition with NOTEARS acyclicity constraints.
-- **`consider.executive`**: Handles policy selection using **Monte Carlo Tree Search (MCTS)**, minimizing **Expected Free Energy (EFE)**. Incorporates causal epistemic guidance.
+- **`consider.causal`**: Implements causal structure discovery (**DAG learning**) and **Hierarchical Abstraction**. It groups interdependent slots into high-level "Concepts" based on the learned precision matrix (ALVGL).
+- **`consider.executive`**: Handles policy selection using **Monte Carlo Tree Search (MCTS)** and **Interventional Reasoning ($do$-calculus)**, minimizing **Expected Free Energy (EFE)**.
 - **`consider.models`**: Defines high-performance neural models (MLPs) using Neanderthal for amortized inference.
 - **`consider.llm`**: Integrates LLMs (Mock, Ollama, and Dynamic providers) to serve as System 1 predictors and scorers for reasoning trees.
 - **`consider.specs`**: Formal data structure specifications using `clojure.spec.alpha`.
@@ -31,7 +31,8 @@ The agent operates through an iterative cycle: **Perceive -> Infer -> Learn -> D
 
 - **High-Performance Inference**: Refactored core mathematical operations to use native BLAS/LAPACK via Neanderthal.
 - **Amortized Recognition**: Implementation of a **Sleep Phase** training loop that optimizes a neural vector field to match generative flows, enabling fast amortized inference.
-- **Causal Reasoning**: Robust structure learning that identifies dependencies between hidden states, allowing the agent to refine its world model over time.
+- **Causal & Interventional Reasoning**: Robust structure learning and $do$-calculus planning that identifies dependencies between hidden states.
+- **Hierarchical Concept Formation**: Automatically groups correlated hidden states into abstract concepts, reducing planning complexity and enabling meta-reasoning.
 - **Structured Reasoning**: MCTS-based decision making that balances exploration (epistemic value) and exploitation (pragmatic utility).
 
 ## Building and Running

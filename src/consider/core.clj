@@ -39,7 +39,8 @@
             (loop [ids slot-ids
                    col-offset 0]
               (when-let [id (first ids)]
-                (let [pos (:position (get states id))
+                (let [pos (or (:position (get states id)) 
+                              (vec (repeat (count (:position (get internal-states id))) 0.0)))
                       dim (count pos)]
                   (dotimes [k dim]
                     (n/entry! X i (+ col-offset k) (double (nth pos k))))
@@ -101,10 +102,16 @@
         sensory-v (if (vector? sensory-data) sensory-data [sensory-data])
         updated-belief (inf/belief-update belief-after-growth sensory-v likelihood-fn vector-field-after-growth inference-steps)
         
-        ;; 3. LEARN: Discover causal structure from updated beliefs
+        ;; 3. LEARN: Discover causal structure and hierarchical abstractions
         precision-matrix (estimate-precision-matrix updated-belief)
         causal-structure (causal/learn-structure precision-matrix)
-        belief-with-learning (wm/update-transition-dynamics updated-belief (:sparse-S causal-structure))
+        
+        ;; Level 2: Group slots into concepts
+        concept-modules (causal/learn-hierarchy causal-structure (keys (:internal-states updated-belief)))
+        
+        belief-with-learning (-> updated-belief
+                                 (wm/update-transition-dynamics (:sparse-S causal-structure))
+                                 (assoc :hierarchy {:conceptual-states (into {} (map (fn [c] [(:concept-id c) c]) concept-modules))}))
         
         ;; 4. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
         initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-v)})

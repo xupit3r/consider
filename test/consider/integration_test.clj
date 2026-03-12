@@ -234,3 +234,37 @@
                                                       :exploration-weight 1.0})]
       
       (is (= "DO(:me, [10.0])" (:next-action res)) "Agent should choose the intervention to move the causal chain"))))
+
+(deftest test-hierarchical-abstraction
+  (testing "Causal clustering logic groups interdependent slots"
+    (let [S (native/dge 2 2 [0.0 0.5 0.5 0.0]) ;; Strong dependency between 0 and 1
+          slot-ids [:a :b]
+          clusters (consider.causal/cluster-causal-modules S slot-ids 0.1)]
+      (is (= 1 (count clusters)))
+      (is (= #{:a :b} (first clusters)))))
+
+  (testing "Agent groups interdependent slots into high-level concepts"
+    (let [;; Create history where :a and :b are IDENTICAL (perfect correlation)
+          history (repeatedly 50 (fn [] 
+                                   (let [v (rand 10.0)]
+                                     {:internal-states {:a (wm/make-slot :a [v])
+                                                        :b (wm/make-slot :b [v])}})))
+          
+          initial-bs (-> (wm/make-belief-state {} [])
+                         (assoc :history history
+                                :internal-states {:a (wm/make-slot :a [0.0])
+                                                  :b (wm/make-slot :b [0.0])}))
+          
+          agent (core/initialize-agent (:internal-states initial-bs) [] (fn [s] [0.0]) (fn [x t ctx] (n/copy x)) (llm/make-mock-llm))
+          agent-with-history (assoc-in agent [:belief-state :history] history)
+          
+          res (core/step agent-with-history [0.0] {:inference-steps 1 :reasoning-iterations 1 :exploration-weight 1.0})
+          hierarchy (get-in res [:belief-state :hierarchy])]
+      
+      (is (some? hierarchy))
+      ;; Check that a concept was formed grouping :a and :b
+      (let [concepts (vals (:conceptual-states hierarchy))]
+        ;; We check if ANY concept contains BOTH :a and :b
+        (is (some (fn [c] (and (contains? (:constituent-slots c) :a)
+                              (contains? (:constituent-slots c) :b)))
+                  concepts))))))

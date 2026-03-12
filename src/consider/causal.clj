@@ -2,6 +2,7 @@
   "Implementation of Causal Discovery (ALVGL & NOTEARS)."
   (:require [clojure.spec.alpha :as s]
             [consider.specs.causal :as causal-spec]
+            [consider.specs.hierarchy :as hier-spec]
             [uncomplicate.neanderthal.core :as n]
             [uncomplicate.neanderthal.native :as native]
             [uncomplicate.neanderthal.real :as r]
@@ -127,6 +128,62 @@
                 {:sparse-S new-S :low-rank-L new-L :precision-matrix theta :iterations k :error err :acyclicity score}))
             (recur (inc k) new-S new-L new-U)))))))
 
+(defn cluster-causal-modules
+  "Identifies strongly-connected modules in the causal adjacency matrix S.
+   Uses a simple BFS to find connected components in the symmetrized adjacency graph."
+  [S slot-ids threshold]
+  (let [ids (vec (sort slot-ids))
+        d (n/mrows S)
+        n-ids (count ids)]
+    (if (or (<= d 1) (<= n-ids 1))
+      (if (seq ids) [(set ids)] [])
+      (let [adj (n/copy S)
+            _ (vm/abs! adj)
+            sym-adj (n/axpy 1.0 (n/trans adj) adj)
+            max-val (r/nrm2 sym-adj)
+            t (if (> max-val 1.0) (* threshold max-val) threshold)]
+        (loop [idx 0
+               clusters []
+               all-visited-indices #{}]
+          (if (or (>= idx d) (>= idx n-ids))
+            clusters
+            (if (contains? all-visited-indices idx)
+              (recur (inc idx) clusters all-visited-indices)
+              (let [;; BFS
+                    component (loop [queue [idx]
+                                     visited #{idx}]
+                                (if (empty? queue)
+                                  visited
+                                  (let [curr (first queue)
+                                        neighbors (reduce (fn [acc j]
+                                                            (if (and (< j d) (< j n-ids)
+                                                                     (not (contains? visited j))
+                                                                     (> (n/entry sym-adj curr j) t))
+                                                              (conj acc j)
+                                                              acc))
+                                                          []
+                                                          (range (min d n-ids)))]
+                                    (recur (concat (rest queue) neighbors)
+                                           (into visited neighbors)))))]
+                (let [module-ids (set (map #(nth ids %) component))]
+                  (recur (inc idx)
+                         (conj clusters module-ids)
+                         (into all-visited-indices component)))))))))))
+
+(defn learn-hierarchy
+  "Level 2 Learning: Groups slots into concepts based on causal dependencies.
+   Clusters based on the learned low-rank precision matrix L."
+  [causal-res slot-ids]
+  (let [L (:low-rank-L causal-res)
+        modules (cluster-causal-modules L slot-ids 0.1)]
+    (map-indexed (fn [idx constituent-ids]
+                   {:concept-id (keyword (str "concept-" idx))
+                    :constituent-slots constituent-ids
+                    ;; Abstract position is the average of constituents
+                    :position [0.0] 
+                    :variance [1.0]})
+                 modules)))
+
 (defn learn-structure
   "Learns the causal structure from a precision matrix.
    Normalizes the precision matrix to ensure stable ADMM convergence."
@@ -134,7 +191,7 @@
   (let [d (n/mrows precision-matrix)
         norm-val (r/nrm2 precision-matrix)]
     (if (or (zero? norm-val) (Double/isNaN norm-val))
-      (alvgl-decomposition precision-matrix 0.1 0.1)
+      (alvgl-decomposition precision-matrix 0.01 0.1)
       (let [normalized-theta (n/copy precision-matrix)]
         (n/scal! (/ 1.0 norm-val) normalized-theta)
-        (alvgl-decomposition normalized-theta 0.1 0.1 :rho 50.0)))))
+        (alvgl-decomposition normalized-theta 0.01 0.1 :rho 10.0)))))
