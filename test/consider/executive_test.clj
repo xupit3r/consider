@@ -61,3 +61,21 @@
     (is (= 2 (count (get-in pruned-state [:forest :main]))))
     (is (contains? (get-in pruned-state [:forest :main]) "root-0"))
     (is (not (contains? (get-in pruned-state [:forest :main]) "root-1")))))
+
+(deftest test-reason-forest
+  (let [mock-llm (llm/make-mock-llm)
+        initial-state (-> (make-initial-orchestrator-state [])
+                          (add-tree :tree-a [{:role :user :content "Context A"}])
+                          (add-tree :tree-b [{:role :user :content "Context B"}]))
+        reasoned-state (reason-forest initial-state mock-llm mock-llm 10 1.0)]
+    (testing "Reasoning allocated to both trees"
+      (let [tree-a (get-in reasoned-state [:forest :tree-a])
+            tree-b (get-in reasoned-state [:forest :tree-b])]
+        (is (> (count tree-a) 1))
+        (is (> (count tree-b) 1))))
+
+    (testing "Global action selection from forest"
+      (let [best-action (select-best-action-from-forest reasoned-state)]
+        (is (not (nil? best-action)))))))
+
+

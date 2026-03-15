@@ -181,6 +181,30 @@
                                           (range common-count)))]
     (vec (concat new-entities residual-error-entities))))
 
+(defn identify-redundant-slots
+  "Identifies groups of slots that are highly similar and could be merged.
+   Similarity is based on Euclidean distance between positions."
+  [belief-state threshold]
+  (let [internal-states (:internal-states belief-state)
+        ids (vec (keys internal-states))]
+    (loop [remaining-ids ids
+           merges []]
+      (if (empty? remaining-ids)
+        merges
+        (let [id (first remaining-ids)
+              pos (:position (get internal-states id))
+              others (rest remaining-ids)
+              similar (filter (fn [oid]
+                                (let [opos (:position (get internal-states oid))]
+                                  (let [dist (Math/sqrt (reduce + (map (fn [a b] (Math/pow (- a b) 2)) pos opos)))]
+                                    (< dist threshold))))
+                              others)]
+          (if (seq similar)
+            (recur (vec (remove (set similar) others))
+                   (conj merges {:target id :sources similar}))
+            (recur (vec others)
+                   merges)))))))
+
 (defn get-slot
   "Retrieves a slot from the internal states."
   [belief-state id]

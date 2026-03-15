@@ -39,7 +39,7 @@
                           (forager/seed-from-wikipedia "Active Inference"))
               after-foraging (forager/run-foraging forager 2)
               _ (println "Finished foraging, starting sleep...")
-              after-sleep (forager/sleep-consolidate after-foraging)]
+              [after-sleep merges] (forager/sleep-consolidate after-foraging)]
           (println "Finished sleep.")
           ;; Sleep should identify gaps or at least run without error
           (is (some? (:last-sleep-gaps after-sleep))))))))

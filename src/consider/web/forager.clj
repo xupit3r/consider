@@ -243,7 +243,7 @@
                                match-idx (first (keep-indexed (fn [idx group]
                                                                 (when (some #(seq (set/intersection n-words (words %))) group)
                                                                   idx))
-                                                             acc))]
+                                                              acc))]
                            (if match-idx
                              (update acc match-idx conj name)
                              (conj acc [name]))))
@@ -256,7 +256,9 @@
    1. Detect duplicate/synonym entities (LLM-driven merging)
    2. Confidence decay for unconfirmed triples
    3. Find knowledge gaps
-   4. Generate new search queries from gaps"
+   4. Generate new search queries from gaps
+   
+   Returns [updated-state merges-performed]"
   [forager-state]
   (let [{:keys [knowledge-graph knowledge-goals llm-completion-fn]} forager-state
 
@@ -268,14 +270,17 @@
         entity-names (mapv first all-entities)
         merge-groups (find-merge-candidates entity-names)
 
-        _ (when (and llm-completion-fn (seq merge-groups))
-            (doseq [group merge-groups]
-              (let [completion-fn (if (fn? llm-completion-fn)
-                                    llm-completion-fn
-                                    (fn [p] (llm/extract-knowledge llm-completion-fn p [])))
-                    merges (knowledge/canonicalize-entities completion-fn group entity-names)]
-                (doseq [{:keys [old-name canonical-name]} merges]
-                  (graph/merge-entities! knowledge-graph old-name canonical-name)))))
+        merges (when (and llm-completion-fn (seq merge-groups))
+                 (reduce (fn [acc group]
+                           (let [completion-fn (if (fn? llm-completion-fn)
+                                                 llm-completion-fn
+                                                 (fn [p] (llm/extract-knowledge llm-completion-fn p [])))
+                                 merges (knowledge/canonicalize-entities completion-fn group entity-names)]
+                             (doseq [{:keys [old-name canonical-name]} merges]
+                               (graph/merge-entities! knowledge-graph old-name canonical-name))
+                             (into acc merges)))
+                         []
+                         merge-groups))
 
         ;; 3. Find gaps
         gaps (graph/find-sparse-regions knowledge-graph 1)
@@ -297,7 +302,7 @@
                                 forager-state
                                 new-queries)
                         forager-state)]
-    (assoc updated-state :last-sleep-gaps gap-names)))
+    [(assoc updated-state :last-sleep-gaps gap-names) (or merges [])]))
 
 ;; --- Integration with Active Inference Core ---
 

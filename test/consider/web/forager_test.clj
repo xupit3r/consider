@@ -20,7 +20,7 @@
 
   (testing "set-knowledge-goal with vector"
     (let [f (forager/set-knowledge-goal (forager/make-forager {})
-                                         ["active inference" "free energy"])]
+                                        ["active inference" "free energy"])]
       (is (= ["active inference" "free energy"] (:knowledge-goals f))))))
 
 (deftest test-seeding
@@ -34,7 +34,7 @@
 
   (testing "seed-from-urls adds multiple URLs"
     (let [f (forager/seed-from-urls (forager/make-forager {})
-                                     ["https://a.com" "https://b.com" "https://c.com"])]
+                                    ["https://a.com" "https://b.com" "https://c.com"])]
       (is (= 3 (crawler/frontier-size (:crawler-state f)))))))
 
 (deftest test-forager-stats
@@ -60,8 +60,9 @@
       ;; Add some entities to the graph
       (graph/transact-entity! (:knowledge-graph f) {:entity-name "A" :entity-type "Concept"})
       (graph/transact-entity! (:knowledge-graph f) {:entity-name "B" :entity-type "Concept"})
-      (let [consolidated (forager/sleep-consolidate f)]
-        (is (some? (:last-sleep-gaps consolidated)))))))
+      (let [[consolidated merges] (forager/sleep-consolidate f)]
+        (is (some? (:last-sleep-gaps consolidated)))
+        (is (vector? merges))))))
 
 (deftest test-forage-step-empty-frontier
   (testing "forage-step with empty frontier returns nil observation"

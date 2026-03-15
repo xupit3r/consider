@@ -33,7 +33,8 @@
     {:forest {:main {"root" root-node}}
      :active-branches #{"root"}
      :max-depth 10
-     :max-compute-tokens 1000}))
+     :max-compute-tokens 1000
+     :tokens-used 0}))
 
 (defn calculate-causal-ambiguity
   "Calculates an epistemic boost for nodes that intervene on high-uncertainty dimensions.
@@ -231,60 +232,108 @@
    & {:keys [prune-threshold likelihood-fn transition-fn]}]
   (loop [state orchestrator-state
          i iterations]
-    (if (zero? i)
-      state
-      (let [tree (get-in state [:forest tree-id])
-            leaf-id (select-best-node tree "root" exploration-weight)
-            leaf (get tree leaf-id)
+    (let [tokens (:tokens-used state)
+          max-tokens (:max-compute-tokens state)]
+      (if (or (zero? i) (>= tokens max-tokens))
+        state
+        (let [tree (get-in state [:forest tree-id])
+              leaf-id (select-best-node tree "root" exploration-weight)
+              leaf (get tree leaf-id)
 
-            candidates (llm/predict-candidates predictor (:state leaf))
-            ;; Ensure candidates is a collection of maps for calculations below
-            safe-candidates (if (coll? candidates) (filter map? candidates) [])
+              candidates (llm/predict-candidates predictor (:state leaf))
+              ;; Ensure candidates is a collection of maps for calculations below
+              safe-candidates (if (coll? candidates) (filter map? candidates) [])
 
-            state-after-expansion (expand-node state tree-id leaf-id candidates)
+              state-after-expansion (-> (expand-node state tree-id leaf-id candidates)
+                                        (update :tokens-used + 100)) ;; Estimate 100 tokens per expansion
 
-            avg-heuristic-value (let [cnt (max 1 (count safe-candidates))
-                                      avg-pragmatic (/ (reduce + (map #(or (:pragmatic-estimate %) 0.5) safe-candidates)) cnt)
-                                      avg-epistemic (/ (reduce + (map #(or (:epistemic-estimate %) 0.1) safe-candidates)) cnt)
-                                      llm-g (- (- 1.0 avg-pragmatic) avg-epistemic)
-                                      model-g (if (and likelihood-fn transition-fn)
-                                                (let [meta-bs (:belief-state (meta state))
-                                                      action-str (or (:action leaf) "STAY")
-                                                      action (parse-interventional-action action-str)
-                                                      pred-states (transition-fn (:internal-states meta-bs) action)
-                                                      pred-bs (assoc meta-bs :internal-states pred-states)
-                                                      efe-res (try
-                                                                (when (and likelihood-fn (fn? likelihood-fn))
-                                                                  (inf/expected-free-energy pred-bs likelihood-fn))
-                                                                (catch Exception _ nil))]
-                                                  (if efe-res
-                                                    (- (:g efe-res) avg-epistemic)
-                                                    llm-g))
-                                                llm-g)
+              avg-heuristic-value (let [cnt (max 1 (count safe-candidates))
+                                        avg-pragmatic (/ (reduce + (map #(or (:pragmatic-estimate %) 0.5) safe-candidates)) cnt)
+                                        avg-epistemic (/ (reduce + (map #(or (:epistemic-estimate %) 0.1) safe-candidates)) cnt)
+                                        llm-g (- (- 1.0 avg-pragmatic) avg-epistemic)
+                                        model-g (if (and likelihood-fn transition-fn)
+                                                  (let [meta-bs (:belief-state (meta state))
+                                                        action-str (or (:action leaf) "STAY")
+                                                        action (parse-interventional-action action-str)
+                                                        pred-states (transition-fn (:internal-states meta-bs) action)
+                                                        pred-bs (assoc meta-bs :internal-states pred-states)
+                                                        efe-res (try
+                                                                  (when (and likelihood-fn (fn? likelihood-fn))
+                                                                    (inf/expected-free-energy pred-bs likelihood-fn))
+                                                                  (catch Exception _ nil))]
+                                                    (if efe-res
+                                                      (- (:g efe-res) avg-epistemic)
+                                                      llm-g))
+                                                  llm-g)
+                                        precision (get (meta state) :precision-matrix)
+                                        slot-ids (get (meta state) :slot-ids)
+                                        target-id (when (map? (:action leaf)) (:target (:action leaf)))
+                                        causal-boost (calculate-causal-ambiguity precision slot-ids target-id)]
+                                    (- model-g (* 100.0 causal-boost)))
+
+              current-tree (get-in state-after-expansion [:forest tree-id])
+              updated-tree (try
+                             (reduce
+                              (fn [t node-id]
+                                (let [node (get t node-id)
                                       precision (get (meta state) :precision-matrix)
                                       slot-ids (get (meta state) :slot-ids)
-                                      target-id (when (map? (:action leaf)) (:target (:action leaf)))
-                                      causal-boost (calculate-causal-ambiguity precision slot-ids target-id)]
-                                  (- model-g (* 100.0 causal-boost)))
+                                      target-id (when (map? (:action node)) (:target (:action node)))
+                                      boost (calculate-causal-ambiguity precision slot-ids target-id)
+                                      new-val (if (> boost 5.0) -1000.0 (:value node))]
+                                  (assoc t node-id (assoc node :value new-val))))
+                              current-tree
+                              (map :node-id (filter #(= (:parent-id %) leaf-id) (vals current-tree))))
+                             (catch Exception _ current-tree))
 
-            current-tree (get-in state-after-expansion [:forest tree-id])
-            updated-tree (try
-                           (reduce
-                            (fn [t node-id]
-                              (let [node (get t node-id)
-                                    precision (get (meta state) :precision-matrix)
-                                    slot-ids (get (meta state) :slot-ids)
-                                    target-id (when (map? (:action node)) (:target (:action node)))
-                                    boost (calculate-causal-ambiguity precision slot-ids target-id)
-                                    new-val (if (> boost 5.0) -1000.0 (:value node))]
-                                (assoc t node-id (assoc node :value new-val))))
-                            current-tree
-                            (map :node-id (filter #(= (:parent-id %) leaf-id) (vals current-tree))))
-                           (catch Exception _ current-tree))
+              final-tree (update-node-value updated-tree leaf-id avg-heuristic-value)
+              state-with-updated-tree (assoc-in state-after-expansion [:forest tree-id] final-tree)
+              final-state (if prune-threshold
+                            (prune-branches state-with-updated-tree tree-id prune-threshold)
+                            state-with-updated-tree)]
+          (recur final-state (dec i)))))))
 
-            final-tree (update-node-value updated-tree leaf-id avg-heuristic-value)
-            state-with-updated-tree (assoc-in state-after-expansion [:forest tree-id] final-tree)
-            final-state (if prune-threshold
-                          (prune-branches state-with-updated-tree tree-id prune-threshold)
-                          state-with-updated-tree)]
-        (recur final-state (dec i))))))
+(defn reason-forest
+  "Orchestrates reasoning across all trees in the forest.
+   Allocates a budget of iterations to each tree."
+  [orchestrator-state predictor-fn scorer-fn total-iterations exploration-weight & {:keys [prune-threshold likelihood-fn transition-fn]}]
+  (let [tree-ids (keys (:forest orchestrator-state))
+        n-trees (count tree-ids)]
+    (if (zero? n-trees)
+      orchestrator-state
+      (let [iterations-per-tree (quot total-iterations n-trees)]
+        (reduce (fn [state tree-id]
+                  (reason state predictor-fn scorer-fn tree-id iterations-per-tree exploration-weight
+                          :prune-threshold prune-threshold
+                          :likelihood-fn likelihood-fn
+                          :transition-fn transition-fn))
+                orchestrator-state
+                tree-ids)))))
+
+(defn select-best-action-from-forest
+  "Selects the overall best action by comparing the best policies from all trees.
+   Uses meta-Expected Free Energy (average G of the path)."
+  [orchestrator-state]
+  (let [tree-ids (keys (:forest orchestrator-state))
+        best-policies (map (fn [id] {:tree-id id :policy (extract-best-policy orchestrator-state id)}) tree-ids)
+        ;; Simple meta-selection: choose the one with the lowest G at the first step
+        scored-policies (keep (fn [{:keys [tree-id policy]}]
+                                (let [tree (get-in orchestrator-state [:forest tree-id])
+                                      root (get tree "root")
+                                      ;; Find the child node corresponding to the first action in policy
+                                      action-label (first policy)
+                                      child (some (fn [node]
+                                                    (when (and (= (:parent-id node) "root")
+                                                               (= (let [act (:action node)]
+                                                                    (if (map? act) (:label act act) act))
+                                                                  action-label))
+                                                      node))
+                                                  (vals tree))]
+                                  (when child
+                                    {:tree-id tree-id :action action-label :g (or (:value child) 1000.0)})))
+                              best-policies)]
+    (when (seq scored-policies)
+      (let [best (first (sort-by :g scored-policies))]
+        (:action best)))))
+
+

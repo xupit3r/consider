@@ -53,58 +53,53 @@
 
 (defn acyclicity-score
   "Calculates the NOTEARS acyclicity score.
-   Clips entries to prevent matrix exponential overflow."
+   Uses a higher-order Taylor approximation for exp(W * W)."
   [W]
   (let [d (n/mrows W)
-        W-safe (n/copy W)
-        _ (dotimes [i d]
-            (dotimes [j d]
-              (let [v (n/entry W i j)]
-                (n/entry! W-safe i j (max -1.0 (min 1.0 v))))))
-        W-sq (vm/sqr W-safe)
+        W-sq (vm/sqr (n/copy W))
         I (native/dge d d)]
     (n/scal! 0.0 I)
     (dotimes [i d] (n/entry! I i i 1.0))
     (let [M1 W-sq
-          M2 (n/mm W-sq W-sq)
+          M2 (n/mm M1 M1)
+          M3 (n/mm M2 M1)
+          M4 (n/mm M2 M2)
           exp-M (n/copy I)]
       (n/axpy! 1.0 M1 exp-M)
       (n/axpy! 0.5 M2 exp-M)
+      (n/axpy! (/ 1.0 6.0) M3 exp-M)
+      (n/axpy! (/ 1.0 24.0) M4 exp-M)
       (let [score (- (matrix-trace exp-M) d)]
-        (if (Double/isNaN score) 100.0 score)))))
+        (if (or (Double/isNaN score) (Double/isInfinite score)) 100.0 score)))))
 
 (defn acyclicity-gradient
-  "Calculates the gradient of the NOTEARS acyclicity score.
-   Clips inputs and outputs for numerical stability."
+  "Calculates the gradient of the NOTEARS acyclicity score."
   [W]
   (let [d (n/mrows W)
-        W-safe (n/copy W)
-        _ (dotimes [i d]
-            (dotimes [j d]
-              (let [v (n/entry W i j)]
-                (n/entry! W-safe i j (max -1.0 (min 1.0 v))))))
-        W-sq (vm/sqr W-safe)
+        W-sq (vm/sqr (n/copy W))
         I (native/dge d d)]
     (n/scal! 0.0 I)
     (dotimes [i d] (n/entry! I i i 1.0))
     (let [M1 W-sq
-          M2 (n/mm W-sq W-sq)
-          exp-M (n/copy I)]
-      (n/axpy! 1.0 M1 exp-M)
-      (n/axpy! 0.5 M2 exp-M)
-      (let [grad (n/trans exp-M)
-            two-W (n/copy W-safe)]
+          M2 (n/mm M1 M1)
+          M3 (n/mm M2 M1)
+          exp-M-deriv (n/copy I)]
+      (n/axpy! 1.0 M1 exp-M-deriv)
+      (n/axpy! 0.5 M2 exp-M-deriv)
+      (n/axpy! (/ 1.0 6.0) M3 exp-M-deriv)
+      (let [grad (n/trans exp-M-deriv)
+            two-W (n/copy W)]
         (n/scal! 2.0 two-W)
         (vm/mul! grad two-W)
         (let [gnorm (r/nrm2 grad)]
-          (if (or (Double/isNaN gnorm) (> gnorm 10.0))
-            (n/scal! (/ 1.0 (or gnorm 1.0)) grad)
+          (if (or (Double/isNaN gnorm) (> gnorm 100.0))
+            (n/scal! (/ 10.0 (or gnorm 1.0)) grad)
             grad))))))
 
 (defn alvgl-decomposition
   "Performs Sparse-Low Rank decomposition of a precision matrix using ADMM with DAG constraints."
   [theta lambda gamma & {:keys [rho beta max-iter tol eta]
-                         :or {rho 10.0 beta 0.01 max-iter 100 tol 1e-4 eta 0.01}}]
+                         :or {rho 5.0 beta 0.5 max-iter 200 tol 1e-4 eta 0.05}}]
   (let [d (n/mrows theta)
         S (native/dge d d)
         L (native/dge d d)
@@ -115,32 +110,26 @@
     (loop [k 0 S S L L U U]
       (if (>= k max-iter)
         (let [score (acyclicity-score S)]
-          (if (or (Double/isNaN score) (> score 1.0))
-            {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L (n/copy theta) :precision-matrix theta
-             :iterations k :acyclicity 0.0 :warning "Diverged to cyclic or NaN structure"}
-            {:sparse-S S :low-rank-L L :precision-matrix theta :iterations k :acyclicity score}))
+          {:sparse-S S :low-rank-L L :precision-matrix theta :iterations k :acyclicity score})
         (let [grad (acyclicity-gradient S)
               temp-S (n/copy theta)
-              _ (n/axpy! 1.0 L temp-S)
+              _ (n/axpy! -1.0 L temp-S)
               _ (n/axpy! -1.0 U temp-S)
-              _ (n/axpy! (- (* eta beta)) grad temp-S)
+              _ (n/axpy! (- (* beta eta)) grad temp-S)
               new-S (soft-threshold temp-S (/ lambda rho))
-              temp-L (n/copy new-S)
-              _ (n/axpy! -1.0 theta temp-L)
-              _ (n/axpy! 1.0 U temp-L)
+              temp-L (n/copy theta)
+              _ (n/axpy! -1.0 new-S temp-L)
+              _ (n/axpy! -1.0 U temp-L)
               new-L (sv-threshold temp-L (/ gamma rho))
               new-U (n/copy U)
-              _ (n/axpy! 1.0 theta new-U)
-              _ (n/axpy! -1.0 new-S new-U)
+              _ (n/axpy! 1.0 new-S new-U)
               _ (n/axpy! 1.0 new-L new-U)
+              _ (n/axpy! -1.0 theta new-U)
               diff (n/axpy! -1.0 S (n/copy new-S))
               err (r/nrm2 diff)]
-          (if (or (< err tol) (Double/isNaN err) (> (r/nrm2 new-S) 1e4))
+          (if (or (< err tol) (Double/isNaN err))
             (let [score (acyclicity-score new-S)]
-              (if (or (Double/isNaN score) (> score 1.0))
-                {:sparse-S (n/scal! 0.0 (native/dge d d)) :low-rank-L (n/copy theta) :precision-matrix theta
-                 :iterations k :acyclicity 0.0 :warning "Early termination due to divergence or NaN"}
-                {:sparse-S new-S :low-rank-L new-L :precision-matrix theta :iterations k :error err :acyclicity score}))
+              {:sparse-S new-S :low-rank-L new-L :precision-matrix theta :iterations k :error err :acyclicity score})
             (recur (inc k) new-S new-L new-U)))))))
 
 (defn cluster-causal-modules
@@ -194,8 +183,7 @@
     (map-indexed (fn [idx constituent-ids]
                    {:concept-id (keyword (str "concept-" idx))
                     :constituent-slots constituent-ids
-                    ;; Abstract position is the average of constituents
-                    :position [0.0] 
+                    :position [0.0]
                     :variance [1.0]})
                  modules)))
 
@@ -209,4 +197,4 @@
       (alvgl-decomposition precision-matrix 0.01 0.1)
       (let [normalized-theta (n/copy precision-matrix)]
         (n/scal! (/ 1.0 norm-val) normalized-theta)
-        (alvgl-decomposition normalized-theta 0.01 0.1 :rho 10.0)))))
+        (alvgl-decomposition normalized-theta 0.01 0.1 :rho 5.0 :beta 0.5 :max-iter 200)))))

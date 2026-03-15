@@ -179,3 +179,46 @@
     (assoc net
            :w1 new-w1 :w2 new-w2 :b2 new-b2
            :state-dim new-state-dim :obs-dim new-obs-dim)))
+
+(defn resize-network
+  "Resizes the input and output layers of the MLP to handle a change in slot count.
+   Handles both growth and shrinkage. Preserves existing weights where indices match."
+  [net new-state-dim new-obs-dim]
+  (let [{:keys [w1 b1 w2 b2 state-dim obs-dim hidden-dim]} net
+        new-input-dim (+ new-state-dim 1 new-obs-dim)
+
+        new-w1 (native/dge hidden-dim new-input-dim)
+        new-w2 (native/dge new-state-dim hidden-dim)
+        new-b2 (native/dv new-state-dim)]
+
+    ;; Initialize new weights with small noise
+    (rng/rand-normal! 0.0 0.01 new-w1)
+    (rng/rand-normal! 0.0 0.01 new-w2)
+    (n/scal! 0.0 new-b2)
+
+    ;; 1. Copy State weights [0...min(state-dim, new-state-dim)-1]
+    (dotimes [i hidden-dim]
+      (dotimes [j (min state-dim new-state-dim)]
+        (n/entry! new-w1 i j (n/entry w1 i j))))
+
+    ;; 2. Copy Time weight [state-dim] -> [new-state-dim]
+    (dotimes [i hidden-dim]
+      (n/entry! new-w1 i new-state-dim (n/entry w1 i state-dim)))
+
+    ;; 3. Copy Observation weights
+    (dotimes [i hidden-dim]
+      (dotimes [j (min obs-dim new-obs-dim)]
+        (n/entry! new-w1 i (+ new-state-dim 1 j) (n/entry w1 i (+ state-dim 1 j)))))
+
+    ;; 4. Copy Output weights
+    (dotimes [i (min state-dim new-state-dim)]
+      (dotimes [j hidden-dim]
+        (n/entry! new-w2 i j (n/entry w2 i j))))
+
+    (dotimes [i (min state-dim new-state-dim)]
+      (n/entry! new-b2 i (n/entry b2 i)))
+
+    (assoc net
+           :w1 new-w1 :w2 new-w2 :b2 new-b2
+           :state-dim new-state-dim :obs-dim new-obs-dim)))
+

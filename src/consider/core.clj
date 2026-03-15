@@ -94,10 +94,10 @@
 
 (defn step
   "Performs a single Active Inference cycle: Perceive -> Infer -> Learn -> Decide -> Act."
-  [agent-state sensory-data {:keys [inference-steps reasoning-iterations exploration-weight prune-threshold]}]
+  [agent-state sensory-data {:keys [inference-steps reasoning-iterations exploration-weight prune-threshold merge-threshold]}]
   (let [{:keys [belief-state orchestrator-state likelihood-fn vector-field-fn llm-system]} agent-state
 
-        ;; 1. GROWTH CHECK: Detect novelty BEFORE inference to ensure neural network matches state space
+        ;; 1. GROWTH CHECK: Detect novelty
         predicted-obs (wm/predict-observation belief-state)
         novel-slots (wm/identify-novel-entities belief-state sensory-data predicted-obs)
 
@@ -105,19 +105,31 @@
                               belief-state
                               (wm/grow-slots belief-state novel-slots))
 
-        vector-field-after-growth (if (and (not (fn? vector-field-fn))
-                                           (not (empty? novel-slots)))
-                                    (let [all-slots (:internal-states belief-after-growth)
-                                          total-state-dim (reduce + (map #(count (:position %)) (vals all-slots)))
-                                          total-obs-dim (count (if (seqable? sensory-data) sensory-data [sensory-data]))]
-                                      (models/grow-network vector-field-fn total-state-dim total-obs-dim))
-                                    vector-field-fn)
+        ;; 2. MERGE CHECK: Detect redundancy (Consolidation)
+        redundant-groups (wm/identify-redundant-slots belief-after-growth (or merge-threshold 0.01))
 
-        ;; 2. PERCEIVE & INFER: Update beliefs based on sensory data (Minimize VFE)
+        belief-after-consolidation (if (empty? redundant-groups)
+                                     belief-after-growth
+                                     (reduce (fn [bs {:keys [target sources]}]
+                                               (wm/merge-slots bs target sources))
+                                             belief-after-growth
+                                             redundant-groups))
+
+        ;; 3. STRUCTURAL ADAPTATION: Resize neural network if state space changed
+        vector-field-after-growth
+        (if (and (not (fn? vector-field-fn))
+                 (or (seq novel-slots) (seq redundant-groups)))
+          (let [all-slots (:internal-states belief-after-consolidation)
+                total-state-dim (reduce + (map #(count (:position %)) (vals all-slots)))
+                total-obs-dim (count (if (seqable? sensory-data) sensory-data [sensory-data]))]
+            (models/resize-network vector-field-fn total-state-dim total-obs-dim))
+          vector-field-fn)
+
+        ;; 4. PERCEIVE & INFER: Update beliefs based on sensory data (Minimize VFE)
         sensory-v (if (vector? sensory-data) sensory-data [sensory-data])
-        updated-belief (inf/belief-update belief-after-growth sensory-v likelihood-fn vector-field-after-growth inference-steps)
+        updated-belief (inf/belief-update belief-after-consolidation sensory-v likelihood-fn vector-field-after-growth inference-steps)
 
-        ;; 3. LEARN: Discover causal structure and hierarchical abstractions
+        ;; 5. LEARN: Discover causal structure and hierarchical abstractions
         precision-matrix (estimate-precision-matrix updated-belief)
         causal-structure (causal/learn-structure precision-matrix)
 
@@ -128,7 +140,7 @@
                                  (wm/update-transition-dynamics (:sparse-S causal-structure))
                                  (assoc :hierarchy {:conceptual-states (into {} (map (fn [c] [(:concept-id c) c]) concept-modules))}))
 
-        ;; 4. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
+        ;; 6. DECIDE: Perform MCTS reasoning to minimize Expected Free Energy (G)
         initial-trajectory (conj [] {:role :user :content (str "Sensory Observation: " sensory-v)})
         updated-orchestrator (-> orchestrator-state
                                  (exec/add-tree :current initial-trajectory)
@@ -153,11 +165,11 @@
                                            :likelihood-fn (:likelihood-mapping belief-with-learning)
                                            :transition-fn (:transition-dynamics belief-with-learning))
 
-        ;; 5. ACT: Extract the best policy
+        ;; 7. ACT: Extract the best policy
         best-policy (exec/extract-best-policy reasoned-orchestrator :current)
         next-action (first best-policy)
 
-        ;; 6. SLEEP (Amortization): Update the recognition model
+        ;; 8. SLEEP (Amortization): Update the recognition model
         trained-vector-field (inf/train-recognition-model vector-field-after-growth belief-with-learning 10)]
 
     {:belief-state belief-with-learning

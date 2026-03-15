@@ -8,7 +8,7 @@
 
 (defn make-knowledge-graph
   "Creates a new in-memory Asami knowledge graph."
-  ([] 
+  ([]
    (Thread/sleep 1)
    (make-knowledge-graph (str "asami:mem://consider-kg-" (System/currentTimeMillis))))
   ([uri]
@@ -234,6 +234,19 @@
 
 ;; --- Entity Merging (Sleep Phase) ---
 
+(defn- retract-entity!
+  "Helper: Retracts all datoms associated with an entity ID (as subject or object)."
+  [conn eid]
+  (let [db (d/db conn)
+        ;; Outgoing
+        out (d/q '[:find ?p ?v :in $ ?e :where [?e ?p ?v]] db eid)
+        ;; Incoming
+        in (d/q '[:find ?s ?p :in $ ?e :where [?s ?p ?e]] db eid)
+        tx-data (concat (map (fn [[p v]] [:db/retract eid p v]) out)
+                        (map (fn [[s p]] [:db/retract s p eid]) in))]
+    (when (seq tx-data)
+      @(d/transact conn {:tx-data (vec tx-data)}))))
+
 (defn merge-entities!
   "Merges two entities in the knowledge graph (for sleep-phase consolidation).
    Rewrites all triples referencing old-name to use canonical-name."
@@ -255,19 +268,21 @@
                            [?t :triple/subject ?subj]
                            [?t :triple/predicate ?pred]
                            [?t :triple/object ?old]]
-                         db old-name)]
-    ;; Rewrite subject references
+                         db old-name)
+        old-entity-id (keyword "entity" (str/replace old-name #"\s+" "-"))]
+
+    ;; 1. Create new triples with canonical name
     (doseq [[t-id pred obj] subj-triples]
       (transact-triple! kg {:subject canonical-name :predicate pred :object obj}))
-    ;; Rewrite object references
     (doseq [[t-id subj pred] obj-triples]
       (transact-triple! kg {:subject subj :predicate pred :object canonical-name}))
 
-    ;; Retract old triples and old entity
-    (let [tx-retract (concat (map (fn [[t-id & _]] [:db/retractEntity t-id]) subj-triples)
-                             (map (fn [[t-id & _]] [:db/retractEntity t-id]) obj-triples)
-                             [[:db/retractEntity (keyword "entity" (str/replace old-name #"\s+" "-"))]])]
-      @(d/transact conn {:tx-data tx-retract}))
+    ;; 2. Retract old triples (entities)
+    (doseq [[t-id & _] (concat subj-triples obj-triples)]
+      (retract-entity! conn t-id))
+
+    ;; 3. Retract old entity itself
+    (retract-entity! conn old-entity-id)
 
     {:merged old-name :into canonical-name
      :triples-rewritten (+ (count subj-triples) (count obj-triples))}))
